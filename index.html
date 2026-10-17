@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <!-- prettier-ignore -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0b1015" />
+    <title>Paladin · Mazmorras</title>
+    <link rel="icon" href="icons/icon.svg" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="src/v2/style.css" />
+  </head>
+  <body>
+    <canvas id="game" aria-label="Mazmorra"></canvas>
+    <div id="hud" hidden>
+      <div class="vitals">
+        <strong id="floor"></strong>
+        <div id="hp"></div>
+        <meter id="hpbar" min="0" max="100" value="100"></meter>
+        <div id="armor"></div>
+        <meter id="armorbar" min="0" max="20" value="20"></meter
+        ><span id="gold"></span>
+      </div>
+      <div class="topright">
+        <canvas
+          id="minimap"
+          width="160"
+          height="130"
+          aria-label="Mapa de salas descubiertas"
+        ></canvas
+        ><button id="pause">Ⅱ Pausa</button>
+      </div>
+      <div id="bossbar"></div>
+    </div>
+    <div id="controls" hidden>
+      <button id="attack" class="action attack">⚔<small>ATACAR</small></button
+      ><button id="skill" class="action skill">✦<small>HABILIDAD</small></button
+      ><button id="dash" class="action dash">➤<small>ESQUIVAR</small></button
+      ><button id="swap" class="action swap">➹<small>CAMBIAR</small></button>
+    </div>
+    <div id="joystick" hidden><i></i></div>
+    <div id="room-banner"></div>
+    <div id="joystick-hint"></div>
+    <div id="tutorial" hidden>
+      <b>Tu primer descenso</b
+      ><span>① Arrastrá a la izquierda para moverte.</span
+      ><span>② Mantené atacar: apuntás automáticamente.</span
+      ><span>③ Tocá esquivar para evitar el daño.</span
+      ><button id="tutorial-close">¡Vamos!</button>
+    </div>
+    <div id="rotate">Girá el celular para jugar</div>
+    <main id="screen"></main>
+    <div id="modal" hidden></div>
+    <div id="toast" role="status" hidden></div>
+    <div id="transition" hidden></div>
+    <aside id="debug" hidden></aside>
+    <script type="module" src="src/v2/main.js"></script>
+  </body>
+</html>
