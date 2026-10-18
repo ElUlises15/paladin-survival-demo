@@ -68,6 +68,9 @@ const cues = {
   bowDraw: [110, 0.19, 0.35],
   arrowRelease: [650, 0.1, 0.5],
   arrowHit: [340, 0.12, 0.6],
+  arrowWall: [150, 0.12, 0.5],
+  footstep: [100, 0.06, 1],
+  armorClank: [2200, 0.08, 0],
   playerHurt: [95, 0.23, 0.4],
   enemyHit: [180, 0.08, 0.35],
   enemyDeath: [130, 0.25, 0.5],
@@ -106,6 +109,19 @@ export function createSound(env = globalThis, initial = {}) {
       return undefined;
     }
   };
+  // A voice is one complete cue, including its delayed layers and modulators.
+  const activeSfx = new Set();
+  let buildingVoice;
+  function ended(source, nodes, voice = buildingVoice) {
+    if (voice) voice.add(source);
+    source.onended = () => {
+      for (const node of [source, ...nodes]) safe(() => node.disconnect());
+      if (voice) {
+        voice.delete(source);
+        if (!voice.size) activeSfx.delete(voice);
+      }
+    };
+  }
   function volumes() {
     if (!context) return;
     master.gain.setTargetAtTime(
@@ -144,10 +160,7 @@ export function createSound(env = globalThis, initial = {}) {
     oscillator.connect(gain);
     oscillator.start(time);
     oscillator.stop(time + duration);
-    oscillator.onended = () => {
-      oscillator.disconnect();
-      gain.disconnect();
-    };
+    ended(oscillator, [gain], bus === sfx ? buildingVoice : undefined);
     if (blend && noise) {
       const source = context.createBufferSource(),
         filter = context.createBiquadFilter(),
@@ -162,11 +175,7 @@ export function createSound(env = globalThis, initial = {}) {
       ng.connect(bus);
       source.start(time);
       source.stop(time + duration);
-      source.onended = () => {
-        source.disconnect();
-        filter.disconnect();
-        ng.disconnect();
-      };
+      ended(source, [filter, ng], bus === sfx ? buildingVoice : undefined);
     }
   }
   function pad(bus, time, frequency, duration, amplitude) {
@@ -244,12 +253,115 @@ export function createSound(env = globalThis, initial = {}) {
     gain.connect(sfx);
     source.start(time, Math.random() * 0.4);
     source.stop(time + duration);
-    source.onended = () => {
-      source.disconnect();
-      filter.disconnect();
-      gain.disconnect();
-    };
+    ended(source, [filter, gain]);
   }
+  // Each layer owns its complete graph; modulation nodes end with their carrier.
+  function layer(time, { frequency = 100, to = frequency, duration = 0.1,
+    amplitude = 0.05, wave = "sine", noise: isNoise = false,
+    filter: filterType, cutoff = 1000, cutoffTo = cutoff, q = 1,
+    modulation = 0, vibrato = false, attack = 0.003, pitchDuration = duration } = {}) {
+    const source = isNoise ? context.createBufferSource() : context.createOscillator();
+    const gain = context.createGain(), nodes = [gain];
+    if (isNoise) source.buffer = noise;
+    else {
+      source.type = wave;
+      source.frequency.setValueAtTime(frequency, time);
+      source.frequency.exponentialRampToValueAtTime(to, time + pitchDuration);
+    }
+    let tail = source;
+    if (filterType) {
+      const filter = context.createBiquadFilter();
+      filter.type = filterType;
+      filter.frequency.setValueAtTime(cutoff, time);
+      filter.frequency.exponentialRampToValueAtTime(cutoffTo, time + duration);
+      if (filter.Q) filter.Q.setValueAtTime(q, time);
+      tail.connect(filter);
+      tail = filter;
+      nodes.push(filter);
+    }
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.exponentialRampToValueAtTime(amplitude, time + attack);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+    tail.connect(gain);
+    gain.connect(sfx);
+    if (modulation) {
+      const lfo = context.createOscillator(), depth = context.createGain();
+      lfo.frequency.setValueAtTime(vibrato ? 29 : 17, time);
+      lfo.frequency.linearRampToValueAtTime(vibrato ? 22 : 31, time + duration);
+      depth.gain.setValueAtTime(modulation, time);
+      depth.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+      lfo.connect(depth);
+      depth.connect(vibrato ? source.frequency : gain.gain);
+      ended(lfo, [depth]);
+      lfo.start(time);
+      lfo.stop(time + duration);
+    }
+    ended(source, nodes);
+    source.start(time);
+    source.stop(time + duration);
+  }
+  function instrument(name, time, opts) {
+    const jitter = 0.98 + Math.random() * 0.04;
+    const noiseLayer = (options) => layer(time, { noise: true, ...options });
+    switch (name) {
+      case "swordSwing": {
+        const [from, to, duration, pitch] = [
+          [650, 3200, 0.14, 820], [2900, 550, 0.18, 620], [950, 260, 0.28, 310],
+        ][[0, 1, 2].includes(opts.variant) ? opts.variant : 0];
+        sweep(time, from * jitter, to * jitter, duration, 0.19, 1.1);
+        layer(time, { frequency: pitch * jitter, to: pitch * jitter * 0.8,
+          duration, amplitude: 0.012, wave: "sine" });
+        return true;
+      }
+      case "swordHit": {
+        const base = (opts.heavy ? 530 : 660) * jitter;
+        noiseLayer({ duration: 0.018, amplitude: opts.heavy ? 0.15 : 0.1,
+          filter: "highpass", cutoff: 1800 });
+        [1, 2.76, 5.4, 8.9].forEach((ratio, i) => layer(time, {
+          frequency: base * ratio, duration: [0.35, 0.22, 0.13, 0.07][i],
+          amplitude: (opts.heavy ? 0.12 : 0.085) / (i + 1),
+          wave: i === 1 ? "triangle" : "sine",
+        }));
+        layer(time, { frequency: opts.heavy ? 100 : 145, to: 55,
+          duration: 0.13, amplitude: opts.heavy ? 0.15 : 0.09 });
+        return true;
+      }
+      case "bowDraw":
+        layer(time, { frequency: 86 * jitter, to: 108 * jitter, wave: "sawtooth",
+          duration: 0.3, amplitude: 0.025, filter: "bandpass", cutoff: 380,
+          cutoffTo: 650, q: 2, modulation: 0.009, attack: 0.025 });
+        for (const offset of [0.04, 0.117, 0.231]) layer(time + offset, {
+          noise: true, duration: 0.009, amplitude: 0.008,
+          filter: "bandpass", cutoff: 1100 * jitter,
+        });
+        return true;
+      case "arrowRelease":
+        layer(time, { frequency: 210 * jitter, to: 177 * jitter, wave: "triangle",
+          duration: 0.25, amplitude: 0.11, filter: "lowpass", cutoff: 2400,
+          cutoffTo: 600, modulation: 5, vibrato: true, pitchDuration: 0.035 });
+        sweep(time, 5400 * jitter, 1800 * jitter, 0.12, 0.12, 2);
+        return true;
+      case "arrowWall":
+        layer(time, { frequency: 150, to: 60, duration: 0.12, amplitude: 0.13 });
+        noiseLayer({ duration: 0.01, amplitude: 0.1, filter: "highpass", cutoff: 2200 });
+        noiseLayer({ duration: 0.14, amplitude: 0.12, filter: "bandpass", cutoff: 400, q: 5 });
+        return true;
+      case "arrowHit":
+        noiseLayer({ duration: 0.09, amplitude: 0.13, filter: "lowpass", cutoff: 650 });
+        layer(time, { frequency: 115 * jitter, to: 58, duration: 0.1, amplitude: 0.1 });
+        return true;
+      case "footstep":
+        noiseLayer({ duration: 0.06, amplitude: 0.04, filter: "lowpass",
+          cutoff: opts.foot === 1 ? 480 : 350 });
+        return true;
+      case "armorClank":
+        [2200, 3670].forEach((frequency) => layer(time, { frequency: frequency * jitter,
+          duration: 0.08, amplitude: 0.009, wave: "sine" }));
+        return true;
+      default: return false;
+    }
+  }
+
   function changeTrack(id) {
     if (!context) return;
     const now = context.currentTime;
@@ -354,33 +466,44 @@ export function createSound(env = globalThis, initial = {}) {
         volumes();
       });
     },
-    play(name) {
+    play(name, opts = {}) {
       safe(() => {
         if (!context || suspended || context.state !== "running") return;
         const now = context.currentTime,
           cue = cues[name];
-        if (!cue || now - (last.get(name) ?? -10) < 0.065) return;
+        const interval = name === "footstep" || name === "armorClank" ? 0.12 : 0.065;
+        // Red de seguridad: si algún navegador no dispara onended (contexto suspendido en iOS),
+        // las voces viejas no deben bloquear el tope para siempre.
+        for (const v of activeSfx) if (v.expires < now) activeSfx.delete(v);
+        if (!cue || now - (last.get(name) ?? -10) < interval || activeSfx.size >= 24) return;
         last.set(name, now);
-        tone(
-          sfx,
-          now,
-          cue[0] * (0.96 + Math.random() * 0.08),
-          cue[1],
-          0.18,
-          "triangle",
-          cue[2],
-        );
-        if (name === "swordSwing") sweep(now, 700, 2600, 0.14, 0.22, 1.1);
-        if (name === "dash") sweep(now, 1800, 500, 0.18, 0.16, 0.9);
-        if (name === "arrowRelease") sweep(now, 3200, 1400, 0.09, 0.12, 3);
-        if (name === "bossRoar") sweep(now, 220, 90, 0.7, 0.3, 0.7);
-        if (name === "swordHit") tone(sfx, now, 1250, 0.09, 0.06, "square");
-        if (name === "defeat")
-          for (let i = 1; i <= 2; i++)
-            tone(sfx, now + i * 0.18, cue[0] * [1, 0.84, 0.7][i], 0.4, 0.09);
-        if (name === "victory" || name === "reward" || name === "levelUp")
-          for (let i = 1; i <= 3; i++)
-            tone(sfx, now + i * 0.09, cue[0] * [1, 1.25, 1.5, 2][i], 0.3, 0.1);
+        const voice = new Set();
+        voice.expires = now + 4; // el cue más largo dura < 1 s
+        activeSfx.add(voice);
+        buildingVoice = voice;
+        try {
+          if (instrument(name, now, opts ?? {})) return;
+          tone(
+            sfx,
+            now,
+            cue[0] * (0.96 + Math.random() * 0.08),
+            cue[1],
+            0.18,
+            "triangle",
+            cue[2],
+          );
+          if (name === "dash") sweep(now, 1800, 500, 0.18, 0.16, 0.9);
+          if (name === "bossRoar") sweep(now, 220, 90, 0.7, 0.3, 0.7);
+          if (name === "defeat")
+            for (let i = 1; i <= 2; i++)
+              tone(sfx, now + i * 0.18, cue[0] * [1, 0.84, 0.7][i], 0.4, 0.09);
+          if (name === "victory" || name === "reward" || name === "levelUp")
+            for (let i = 1; i <= 3; i++)
+              tone(sfx, now + i * 0.09, cue[0] * [1, 1.25, 1.5, 2][i], 0.3, 0.1);
+        } finally {
+          buildingVoice = undefined;
+          if (!voice.size) activeSfx.delete(voice);
+        }
       });
     },
     suspend() {
@@ -400,6 +523,12 @@ export function createSound(env = globalThis, initial = {}) {
     dispose() {
       safe(() => {
         env.clearInterval?.(timer);
+        for (const voice of activeSfx) for (const source of [...voice]) {
+          safe(() => source.stop());
+          source.onended?.();
+        }
+        activeSfx.clear();
+        last.clear();
         context?.close()?.catch?.(() => {});
         voices = [];
         context = null;

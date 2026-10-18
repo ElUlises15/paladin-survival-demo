@@ -2,8 +2,14 @@ import { createParticles } from "./effects.js";
 import { viewport, cameraScale } from "./viewport.js";
 import { createArt } from "./art.js";
 import { TILE, SIZE } from "./dungeon.js";
-import { weaponData, SKINS, RARITIES } from "./data.js";
+import { weaponData, RARITIES } from "./data.js";
 import { createSpriteCache } from "../render/sprites.js";
+import {
+  createHeroArt, ANIMS, FRAME, STRIDE, SWINGS, SWORD_REST, swingPose, bowState, nextCombo,
+  drawArm, drawPauldron, drawBow, createSpriteHeroes, spriteFrame, heroPalette,
+} from "./heroart.js";
+import { HERO_ATLASES } from "./heroatlas-data.js";
+const HERO_SCALE = 1.15; // el héroe se dibuja un poco más grande que su radio de colisión
 const CHUNK = 768,
   CHUNK_PAD = 2;
 /** Cámara redondeada a píxeles físicos del canvas (escala de mundo × resolución). */
@@ -44,7 +50,7 @@ export function autoStep(current, frameAvg, timer, levels, drops = 0) {
 }
 // Capas de render que se pueden apagar desde ?debug para aislar artefactos en el teléfono.
 export const LAYER_KEYS = [
-  "floor", "grain", "torches", "vignette", "particles", "ambient", "smoothing", "snap",
+  "floor", "grain", "torches", "vignette", "particles", "ambient", "smoothing", "snap", "sprites",
 ];
 export function defaultLayers() {
   return Object.fromEntries(LAYER_KEYS.map((k) => [k, true]));
@@ -54,7 +60,18 @@ export function createRenderer(canvas) {
   const ctx = canvas.getContext("2d", { alpha: false }),
     sprites = createSpriteCache(),
     art = createArt(),
-    heroSprites = new Map();
+    heroArt = createHeroArt(),
+    spriteHeroes = createSpriteHeroes(HERO_ATLASES);
+  const lerp = (a, b, t) => a + (b - a) * t;
+  // Estado de animación del héroe y del combate (presentación pura).
+  const hs = {
+    flip: 1, walk: 0, stepHalf: 0, lastX: null, lastY: null, speed: 0, swing: null, lastSwingAt: -9,
+    variant: 0, lastShot: -9, deathAt: null, impacts: [], flashes: [], stuck: [], cues: [],
+  };
+  let lastPlayerScreen = null;
+  let animClock = 0,
+    hitstop = 0,
+    hitstopGap = 0;
   let cache = null,
     dungeon = null,
     camera = { x: 0, y: 0 },
@@ -73,19 +90,6 @@ export function createRenderer(canvas) {
   const lights = [],
     chunks = [];
   sprites.warm();
-  const slash = document.createElement("canvas");
-  slash.width = slash.height = 256;
-  const sc = slash.getContext("2d");
-  const sg = sc.createRadialGradient(128, 128, 30, 128, 128, 125);
-  sg.addColorStop(0, "#ffdc8800");
-  sg.addColorStop(0.7, "#ffdc8822");
-  sg.addColorStop(1, "#fff1b5bb");
-  sc.fillStyle = sg;
-  sc.beginPath();
-  sc.moveTo(128, 128);
-  sc.arc(128, 128, 124, -1.3, 1.3);
-  sc.closePath();
-  sc.fill();
   const themes = [
     ["#132623", "#20342a", "#a5b76b"],
     ["#162329", "#29353a", "#7ad5ce"],
@@ -103,42 +107,186 @@ export function createRenderer(canvas) {
     ctx.textAlign = "center";
     ctx.fillText(t, x, y);
   }
-  function heroSprite(hero, skinId, flash = false) {
-    const key = hero + ":" + skinId + (flash ? ":flash" : "");
-    if (heroSprites.has(key)) return heroSprites.get(key);
-    const base = sprites.player(),
-      out = document.createElement("canvas");
-    out.width = base.width;
-    out.height = base.height;
-    const c = out.getContext("2d");
-    c.drawImage(base, 0, 0);
-    c.globalCompositeOperation = "source-atop";
-    c.globalAlpha = 0.38;
-    c.fillStyle = (SKINS.find((s) => s.id === skinId) || SKINS[0]).color;
-    c.fillRect(0, 0, out.width, out.height);
-    c.globalCompositeOperation = "source-over";
-    c.globalAlpha = 1;
-    c.globalCompositeOperation = "source-atop";
-    c.globalAlpha = 0.26;
-    c.fillStyle =
-      hero === "cruzada"
-        ? "#70d8ed"
-        : hero === "inquisidor"
-          ? "#ac67dd"
-          : "#f3d28b";
-    c.fillRect(0, 0, out.width, out.height);
-    c.globalAlpha = 1;
-    c.globalCompositeOperation = "source-over";
-    if (flash) {
-      c.globalCompositeOperation = "source-atop";
-      c.fillStyle = "#ffffff";
-      c.globalAlpha = 0.9;
-      c.fillRect(0, 0, out.width, out.height);
-      c.globalAlpha = 1;
-      c.globalCompositeOperation = "source-over";
+  // ---------- Héroe animado (atlas de cuerpo + brazos/arma por frame) ----------
+  const angLerp = (a, b, t) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * t;
+  const ICON_MELEE = new Set(["hammer", "spear", "axes"]);
+  /** Dibuja la figura en `c` (coordenadas locales, mirando a la derecha). o: {hero, skin, anim, fi, flash, la, weapon, swing, bow, clock, range, ghostAlpha} */
+  function drawFigure(c, o) {
+    // Arte generado (atlas) para espada y arco; el resto de las armas usa el héroe procedural.
+    if (layers.sprites && (o.weapon === "sword" || o.weapon === "crossbow")) {
+      const set = spriteHeroes.get(o.hero);
+      const name = set && spriteFrame({ ...o, frames: set.data.frames });
+      if (name) {
+        if (o.anim === "death" && o.fi >= 2) {
+          c.save();
+          c.translate(18, 14);
+          if (o.weapon === "crossbow") {
+            c.rotate(-1.5);
+            drawBow(c, { draw: 0, arrow: false, vib: 0, nock: 0 }, heroPalette(o.hero, o.skin));
+          } else {
+            c.rotate(0.1);
+            c.drawImage(heroArt.sword(heroPalette(o.hero, o.skin)), -13, -9, 60, 18);
+          }
+          c.restore();
+        }
+        if (o.swing && o.trailCtx && swingPose(o.swing.variant, o.swing.t).trail > 0)
+          drawTrail(c, o, 2, -13, o.la);
+        const breathe = o.anim === "idle" && !o.swing ? Math.sin((o.clock || 0) * 3.9) * 0.012 : 0;
+        spriteHeroes.draw(c, o.hero, o.skin, name, 16, o.flash ? "flash" : "normal", breathe);
+        return;
+      }
     }
-    heroSprites.set(key, out);
-    return out;
+    const A = heroArt.anim(o.hero, o.skin, o.anim),
+      F = A.frames[Math.max(0, Math.min(A.frames.length - 1, o.fi))],
+      pal = A.pal,
+      P = F.P,
+      An = F.A;
+    const body = o.flash ? heroArt.flashFrame(o.hero, o.skin, o.anim, o.fi) : F.cv;
+    const blit = () => c.drawImage(body, -FRAME.ox, -FRAME.oy, FRAME.w, FRAME.h);
+    if (o.anim === "death") {
+      if (o.fi >= 3) {
+        c.save();
+        c.translate(16, 15);
+        c.rotate(0.12);
+        c.drawImage(heroArt.sword(pal), -13, -9, 60, 18);
+        c.restore();
+      }
+      blit();
+      return;
+    }
+    const [sfx, sfy] = An.shoulderF,
+      [sbx, sby] = An.shoulderB;
+    const la = o.la;
+    if (o.weapon === "crossbow") {
+      // Arco largo: el brazo lejano sostiene el arco hacia el objetivo, el cercano tensa la cuerda.
+      const st = o.bow;
+      const gx = sbx + 2 + Math.cos(la) * 15,
+        gy = sby + 1 + Math.sin(la) * 15;
+      drawArm(c, sbx, sby, gx, gy, pal, o.hero, true, -1);
+      blit();
+      c.save();
+      c.translate(gx, gy);
+      c.rotate(la);
+      const nock = drawBow(c, st, pal);
+      c.restore();
+      const nx = gx + Math.cos(la) * nock[0] - Math.sin(la) * nock[1],
+        ny = gy + Math.sin(la) * nock[0] + Math.cos(la) * nock[1];
+      drawArm(c, sfx, sfy, nx, ny, pal, o.hero, false, 1);
+      drawPauldron(c, sfx, sfy, pal, o.hero, P.lean);
+      return;
+    }
+    // Espada (y armas cuerpo a cuerpo): ángulo de la hoja y posición de la mano.
+    const restX = sfx + 6,
+      restY = sfy + 11 + Math.sin((o.clock || 0) * 2.4) * 0.3;
+    const restA = SWORD_REST + P.lean * 0.6 + (o.anim === "walk" ? Math.sin(P.armSwing) * 0.06 : 0);
+    let ang = restA,
+      hx = restX,
+      hy = restY,
+      sp = null;
+    if (o.swing) {
+      sp = swingPose(o.swing.variant, o.swing.t);
+      const a = la + sp.off,
+        ha = la + sp.off * 0.8;
+      ang = angLerp(a, restA, sp.rest);
+      hx = lerp(sfx + Math.cos(ha) * sp.reach, restX, sp.rest);
+      hy = lerp(sfy + Math.sin(ha) * sp.reach, restY, sp.rest);
+    }
+    // mano libre: balanceo al caminar, contrapeso durante el golpe
+    const counter = sp ? -Math.sin(sp.off) * 3 : 0;
+    drawArm(c, sbx, sby, sbx - 1.5 - P.armSwing * 3.2 + counter, sby + 13, pal, o.hero, true, -1);
+    const behind = Math.sin(ang) < -0.72 && Math.cos(ang) < 0.25;
+    const weapon = () => {
+      c.save();
+      c.translate(hx, hy);
+      c.rotate(ang);
+      if (o.weapon === "sword" || !o.weapon) c.drawImage(heroArt.sword(pal), -13, -9, 60, 18);
+      else {
+        c.translate(ICON_MELEE.has(o.weapon) ? 16 : 13, 0);
+        c.rotate(0.82);
+        c.drawImage(art.weapon(o.weapon), -27, -27, 54, 54);
+      }
+      c.restore();
+    };
+    if (behind) weapon();
+    blit();
+    if (sp && sp.trail > 0 && o.trailCtx) drawTrail(c, o, sfx, sfy, la);
+    const [hx2, hy2] = drawArm(c, sfx, sfy, hx, hy, pal, o.hero, false, 1);
+    if (!behind) weapon();
+    // dedos del guantelete sobre el puño
+    c.fillStyle = "#15100d";
+    c.beginPath();
+    c.arc(hx2, hy2, 2.5, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = o.hero === "inquisidor" ? pal.leather : pal.metal;
+    c.beginPath();
+    c.arc(hx2 + 0.3, hy2 - 0.2, 1.7, 0, Math.PI * 2);
+    c.fill();
+    drawPauldron(c, sfx, sfy, pal, o.hero, P.lean);
+  }
+  // Estela del golpe: barrido de la hoja (blanco) + medialuna de energía hasta el alcance real del arma.
+  function drawTrail(c, o, sx, sy, la) {
+    const v = o.swing.variant,
+      sw = SWINGS[v],
+      t1 = o.swing.t,
+      t0 = Math.max(sw.strike[0], t1 - (v === 2 ? 0.1 : 0.08));
+    if (!(t1 > t0)) return;
+    const sp = swingPose(v, t1),
+      fade = sp.trail,
+      segs = 10,
+      reach = o.range || 105;
+    const angs = [];
+    for (let k = 0; k <= segs; k++) {
+      const t = t0 + ((Math.min(t1, sw.strike[1] + 0.06) - t0) * k) / segs;
+      angs.push(la + swingPose(v, t).off);
+    }
+    c.save();
+    c.globalCompositeOperation = "lighter";
+    const gold = v === 2;
+    const bands = [
+      [16, 57, gold ? "255,232,160" : "232,242,255", 0.52],
+      [50, reach * 0.95, gold ? "255,196,90" : "255,220,140", 0.2],
+    ];
+    const a0 = angs[0],
+      a1 = angs[segs],
+      lo = Math.min(a0, a1),
+      hi = Math.max(a0, a1),
+      span = (hi - lo) / (Math.PI * 2);
+    for (const [r0, r1, rgb, alpha] of bands) {
+      if (c.createConicGradient && span > 0.002 && span < 0.98) {
+        // un solo sector suave (sin costuras entre segmentos): la opacidad crece hacia el filo
+        const g = c.createConicGradient(lo, sx, sy),
+          on = `rgba(${rgb},${alpha * fade})`,
+          off = `rgba(${rgb},0)`;
+        g.addColorStop(0, a1 > a0 ? off : on);
+        g.addColorStop(span, a1 > a0 ? on : off);
+        g.addColorStop(Math.min(1, span + 0.001), off);
+        c.fillStyle = g;
+        c.beginPath();
+        c.arc(sx, sy, r1, lo, hi);
+        c.arc(sx, sy, r0, hi, lo, true);
+        c.closePath();
+        c.fill();
+        continue;
+      }
+      for (let k = 0; k < segs; k++) {
+        const b0 = angs[k],
+          b1 = angs[k + 1];
+        c.fillStyle = `rgba(${rgb},${(alpha * fade * (k + 1)) / segs})`;
+        c.beginPath();
+        c.arc(sx, sy, r1, Math.min(b0, b1), Math.max(b0, b1));
+        c.arc(sx, sy, r0, Math.max(b0, b1), Math.min(b0, b1), true);
+        c.closePath();
+        c.fill();
+      }
+    }
+    // filo brillante en el frente de la estela
+    const a = angs[segs];
+    c.strokeStyle = `rgba(255,250,225,${0.85 * fade})`;
+    c.lineWidth = 2.2;
+    c.beginPath();
+    c.arc(sx, sy, reach * 0.9, Math.min(angs[segs - 3], a), Math.max(angs[segs - 3], a));
+    c.stroke();
+    c.restore();
   }
   function build(s) {
     lights.length = 0;
@@ -363,15 +511,42 @@ export function createRenderer(canvas) {
       const c = canvas.getContext("2d");
       c.clearRect(0, 0, canvas.width, canvas.height);
       c.save();
-      c.translate(canvas.width / 2, canvas.height / 2);
-      c.rotate(-Math.PI / 2);
-      c.drawImage(heroSprite(hero, skin), -35, -35, 70, 70);
+      const k = canvas.height / 62;
+      c.translate(canvas.width / 2, canvas.height * 0.62);
+      c.scale(k, k);
+      drawFigure(c, { hero, skin, anim: "idle", fi: 0, la: 0, weapon: "sword", clock: 0 });
       c.restore();
+    },
+    /** Precalienta el atlas del héroe (llamar al empezar la partida para no trabar el primer paso). */
+    warmHero(hero, skin) {
+      heroArt.warm(hero, skin);
+      spriteHeroes.warm(hero, skin);
+    },
+    /** Sonidos de presentación (pasos, impacto sincronizado con la hoja) para que main.js los reproduzca. */
+    takeCues() {
+      const out = hs.cues;
+      hs.cues = [];
+      return out;
+    },
+    get hitstop() {
+      return hitstop;
+    },
+    get swingVariant() {
+      return hs.variant;
+    },
+    debugPlayerScreen() {
+      return lastPlayerScreen;
     },
     resetEffects() {
       particles.clear();
       shakeTime = bossSlow = flashTime = 0;
       effectDungeon = null;
+      hitstop = hitstopGap = 0;
+      Object.assign(hs, {
+        flip: 1, walk: 0, stepHalf: 0, lastX: null, lastY: null, speed: 0, swing: null,
+        lastSwingAt: -9, variant: 0, lastShot: -9, deathAt: null,
+      });
+      hs.impacts.length = hs.flashes.length = hs.stuck.length = hs.cues.length = 0;
     },
     event(e, s, meta) {
       if (effectDungeon !== s.dungeon) {
@@ -386,7 +561,29 @@ export function createRenderer(canvas) {
       );
       const x = e.x ?? s.player.x,
         y = e.y ?? s.player.y;
+      if (e.type === "attack") {
+        const w = weaponData(s.player.weapons[s.activeSlot]);
+        if (w.projectile) hs.lastShot = animClock;
+        else {
+          // armas de golpe doble (hachas) alternan dos golpes rápidos; el remate es de la espada y similares
+          hs.variant = w.hits
+            ? (hs.variant + 1) % 2
+            : nextCombo(hs.variant, animClock - hs.lastSwingAt);
+          hs.lastSwingAt = animClock;
+          hs.swing = { start: animClock, variant: hs.variant };
+        }
+      }
       if (e.type === "hit") {
+        // Golpe cuerpo a cuerpo: el impacto (chispas, parón, sonido metálico) se sincroniza con la hoja.
+        if (e.melee && hs.swing && animClock - hs.swing.start < 0.2) {
+          if (hs.impacts.length < 12)
+            hs.impacts.push({
+              x, y, heavy: !!e.heavy || hs.swing.variant === 2,
+              at: hs.swing.start + SWINGS[hs.swing.variant].contact,
+              stop: SWINGS[hs.swing.variant].stop, px: s.player.x, py: s.player.y,
+            });
+          return "deferred";
+        }
         particles.emit(x, y, "#fff1b0", 9, 130, 0.23);
         if (e.heavy) shakeTime = 0.18;
       }
@@ -401,6 +598,14 @@ export function createRenderer(canvas) {
           70,
           0.55,
         );
+      if (e.type === "kill" && e.melee) {
+        // muerte por espada: el estallido llega con la hoja; hasta entonces queda un "fantasma" del enemigo
+        const im = hs.impacts.find((q) => !q.kill && Math.hypot(q.x - x, q.y - y) < 2);
+        if (im) {
+          im.kill = { etype: e.etype ?? 0, radius: e.radius || 16, facing: e.facing || 0, floor: s.floor };
+          return "deferred";
+        }
+      }
       if (e.type === "kill" || e.type === "bossKill")
         particles.emit(
           x,
@@ -418,9 +623,10 @@ export function createRenderer(canvas) {
       }
       if (e.type === "slam" || e.type === "damage") shakeTime = 0.25;
       if (e.type === "arrowWall") {
-        particles.emit(x, y, "#d4ba8c", 1, 0, 1.8, "arrow");
-        const arrow = particles.active[particles.active.length - 1];
-        if (arrow?.kind === "arrow") arrow.angle = e.angle;
+        // flecha clavada en la pared: queda temblando y se desvanece a los pocos segundos
+        if (hs.stuck.length >= 24) hs.stuck.shift();
+        hs.stuck.push({ x, y, angle: e.angle, t: animClock });
+        particles.emit(x, y, "#b89a6e", 4, 60, 0.25, "dust");
       }
     },
     get renderScale() {
@@ -433,7 +639,7 @@ export function createRenderer(canvas) {
       if (key === "grain") dungeon = null; // re-generar los bloques del piso
       if (key === "vignette") vignetteCache = null;
     },
-    render(s, meta, dt) {
+    render(s, meta, dt, frozen = false) {
       // Resolución dinámica (calidad "auto"): baja la escala interna si los frames tardan > 20 ms y la
       // vuelve a subir si sobra margen. El canvas se estira por CSS, la lógica usa px CSS.
       const levels = resolutionLevels(devicePixelRatio || 1);
@@ -468,6 +674,14 @@ export function createRenderer(canvas) {
       const reduced = reducedMotion();
       const visualDt = dt * (bossSlow > 0 ? 0.2 : 1);
       clock += visualDt;
+      // Parón de impacto (hitstop): congela la animación del héroe; main.js tampoco avanza la simulación.
+      // En pausa/oculto el tiempo de presentación del combate (golpes pendientes, swing,
+      // flechas clavadas) se congela; el lobby (s = null) sigue animando la vista previa.
+      if (!(frozen && s)) {
+        if (hitstop > 0) hitstop = Math.max(0, hitstop - dt);
+        else animClock += visualDt;
+      }
+      hitstopGap = Math.max(0, hitstopGap - dt);
       bossSlow = Math.max(0, bossSlow - dt);
       shakeTime = Math.max(0, shakeTime - dt);
       flashTime = Math.max(0, flashTime - dt);
@@ -490,17 +704,20 @@ export function createRenderer(canvas) {
         if (preview) {
           const c = preview.getContext("2d");
           c.clearRect(0, 0, 280, 150);
-          c.drawImage(sprites.halo(), 30, -20, 220, 220);
+          c.drawImage(sprites.halo(), 40, -30, 200, 200);
           c.save();
-          c.translate(140, 75 + Math.sin(clock * 2) * 3);
-          c.rotate(-Math.PI / 2);
-          c.drawImage(
-            heroSprite(meta.selectedHero, meta.selectedSkin),
-            -75,
-            -75,
-            150,
-            150,
-          );
+          c.translate(140, 96);
+          c.scale(2.15, 2.15);
+          c.drawImage(sprites.shadow(), -20, 10, 40, 12);
+          drawFigure(c, {
+            hero: meta.selectedHero,
+            skin: meta.selectedSkin,
+            anim: "idle",
+            fi: Math.floor(((clock % 1.6) / 1.6) * 8) % 8,
+            la: 0,
+            weapon: "sword",
+            clock,
+          });
           c.restore();
         }
         return;
@@ -509,6 +726,41 @@ export function createRenderer(canvas) {
         build(s);
         particles.clear();
         effectDungeon = s.dungeon;
+        hs.stuck.length = hs.impacts.length = hs.flashes.length = 0;
+      }
+      // Impactos de espada: se disparan cuando la hoja llega (no cuando se apretó el botón).
+      for (let i = hs.impacts.length - 1; i >= 0; i--) {
+        const im = hs.impacts[i];
+        if (animClock < im.at) continue;
+        hs.impacts.splice(i, 1);
+        const away = Math.atan2(im.y - im.py, im.x - im.px),
+          cx = im.x - Math.cos(away) * 12,
+          cy = im.y - Math.sin(away) * 12;
+        if (layers.particles) {
+          const n = im.heavy ? 12 : 8,
+            before = particles.active.length;
+          particles.emit(cx, cy, im.heavy ? "#ffd27a" : "#fff0b8", n, 1, 0.2, "streak");
+          for (const q of particles.active.slice(before)) {
+            const a = away + (Math.random() - 0.5) * 1.9,
+              v = 150 + Math.random() * (im.heavy ? 330 : 240);
+            q.vx = Math.cos(a) * v;
+            q.vy = Math.sin(a) * v;
+            q.life = q.max = 0.1 + Math.random() * 0.14;
+          }
+          particles.emit(im.x, im.y, "#fff1b0", im.heavy ? 6 : 3, 90, 0.22);
+        }
+        hs.flashes.push({ x: cx, y: cy, t: animClock, heavy: im.heavy, a: away });
+        if (!reduced && hitstopGap <= 0) {
+          hitstop = im.stop;
+          hitstopGap = 0.11;
+        }
+        if (im.heavy && !reduced) shakeTime = Math.max(shakeTime, 0.12);
+        hs.cues.push({ name: "swordHit", opts: { heavy: im.heavy } });
+        hs.cues.push({ name: "enemyHit" });
+        if (im.kill) {
+          if (layers.particles) particles.emit(im.x, im.y, "#a9d5da", 20, 190, 1);
+          hs.cues.push({ name: "enemyDeath" });
+        }
       }
       ambientTime += dt;
       if (ambientTime > 0.12 && !reduced && layers.ambient) {
@@ -723,14 +975,15 @@ export function createRenderer(canvas) {
             );
           }
         } else if (f.kind === "afterimage") {
-          ctx.globalAlpha = f.t;
-          ctx.drawImage(
-            heroSprite(s.hero, meta.selectedSkin),
-            f.x - 30,
-            f.y - 30,
-            60,
-            60,
-          );
+          ctx.globalAlpha = f.t * 1.6;
+          ctx.save();
+          ctx.translate(f.x, f.y);
+          ctx.scale(hs.flip * HERO_SCALE, HERO_SCALE);
+          const wid = weaponData(s.player.weapons[s.activeSlot]).id;
+          if (!(layers.sprites && (wid === "sword" || wid === "crossbow") &&
+            spriteHeroes.draw(ctx, s.hero, meta.selectedSkin, "dash0", 16, "ghost")))
+            ctx.drawImage(heroArt.ghost(s.hero, meta.selectedSkin), -FRAME.ox, -FRAME.oy, FRAME.w, FRAME.h);
+          ctx.restore();
         } else if (f.kind === "opened") {
           ctx.fillStyle = "#674426";
           ctx.fillRect(f.x - 23, f.y - 5, 46, 23);
@@ -789,6 +1042,37 @@ export function createRenderer(canvas) {
         }
         ctx.globalAlpha = 1;
       }
+      for (const im of hs.impacts) {
+        if (!im.kill) continue;
+        const k = im.kill,
+          type = k.etype === 1 ? "brute" : k.etype === 2 ? "stalker" : "minor";
+        ctx.save();
+        ctx.translate(im.x, im.y);
+        ctx.rotate(k.facing);
+        ctx.drawImage(
+          sprites.enemy(type, Math.floor((k.floor - 1) / 3), "flash"),
+          -k.radius * 1.9, -k.radius * 1.9, k.radius * 3.8, k.radius * 3.8,
+        );
+        ctx.restore();
+      }
+      for (let i = hs.stuck.length - 1; i >= 0; i--) {
+        const a = hs.stuck[i],
+          age = animClock - a.t;
+        if (age > 6) {
+          hs.stuck.splice(i, 1);
+          continue;
+        }
+        const img = heroArt.arrow(false),
+          k = img.width / 84,
+          wob = Math.sin(age * 55) * 0.16 * Math.exp(-age * 7);
+        ctx.globalAlpha = Math.min(1, 6 - age);
+        ctx.save();
+        ctx.translate(a.x + Math.cos(a.angle) * 6, a.y + Math.sin(a.angle) * 6);
+        ctx.rotate(a.angle + wob);
+        ctx.drawImage(img, 8 * k, 0, 33 * k, img.height, -33, -4, 33, 8);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
       for (const e of s.enemies) {
         if (e.spawn > 0) {
           circle(e.x, e.y, 22 + Math.sin(s.time * 16) * 6, "#ff735b44");
@@ -860,26 +1144,11 @@ export function createRenderer(canvas) {
         ctx.fillRect(e.x - 22, e.y - e.radius - 14, (44 * e.hp) / e.maxHp, 4);
       }
       for (const b of s.bullets) {
-        if (!b.enemy) {
-          const a = Math.atan2(b.vy, b.vx);
+        if (!b.enemy && !b.homing) {
           ctx.save();
           ctx.translate(b.x, b.y);
-          ctx.rotate(a);
-          const trail = ctx.createLinearGradient(-42, 0, 7, 0);
-          trail.addColorStop(0, "#d7f3ff00");
-          trail.addColorStop(1, "#d7f3ff");
-          ctx.strokeStyle = trail;
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(-42, 0);
-          ctx.lineTo(10, 0);
-          ctx.stroke();
-          ctx.fillStyle = "#fff2cc";
-          ctx.beginPath();
-          ctx.moveTo(12, 0);
-          ctx.lineTo(4, -3);
-          ctx.lineTo(4, 3);
-          ctx.fill();
+          ctx.rotate(Math.atan2(b.vy, b.vx));
+          ctx.drawImage(heroArt.arrow(true), -46, -4, 84, 8);
           ctx.restore();
           continue;
         }
@@ -893,96 +1162,90 @@ export function createRenderer(canvas) {
         circle(b.x, b.y, b.radius, b.enemy ? "#ffd8a1" : "#e5fbff");
       }
       const p = s.player;
-      ctx.drawImage(sprites.shadow(), p.x - 30, p.y + 6, 60, 25);
-      ctx.drawImage(sprites.halo(), p.x - 50, p.y - 50, 100, 100);
-      ctx.save();
-      const moving = Math.hypot(p.x - previousX, p.y - previousY) > 0.05;
-      previousX = p.x;
-      previousY = p.y;
-      ctx.translate(p.x, p.y + (moving ? Math.sin(s.time * 17) * 1.6 : 0));
-      ctx.rotate(p.facing);
-      ctx.globalAlpha = p.invuln > 0 ? 0.82 + 0.18 * Math.sin(s.time * 40) : 1;
-      const sprite = heroSprite(
-        s.hero,
-        meta.selectedSkin,
-        s.time - p.lastDamage < 0.08,
-      );
-      ctx.drawImage(sprite, -30, -30, 60, 60);
-      const weapon = weaponData(p.weapons[s.activeSlot]);
-      ctx.save();
-      ctx.translate(23, 19);
-      const charge = weapon.projectile
-        ? Math.max(0, 1 - p.attackCd / (weapon.cooldown || 0.6))
-        : 0;
-      ctx.rotate(
-        Math.PI / 4 +
-          (weapon.projectile
-            ? 0
-            : p.swing > 0
-              ? -1.1 + (1 - p.swing / 0.16) * 2.2
-              : -0.2 - Math.max(0, 0.08 - p.attackCd) * 2),
-      );
-      if (weapon.projectile) {
-        ctx.strokeStyle = "#e7c993";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(-15, -18);
-        ctx.quadraticCurveTo(18 + charge * 7, 0, 15, 18);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(-15, -18);
-        ctx.lineTo(-charge * 12, 0);
-        ctx.lineTo(15, 18);
-        ctx.stroke();
+      const wd = weaponData(p.weapons[s.activeSlot]);
+      // --- estado de animación del héroe (sólo presentación; nunca toca la simulación) ---
+      if (hs.lastX === null || Math.hypot(p.x - hs.lastX, p.y - hs.lastY) > 160) {
+        hs.lastX = p.x;
+        hs.lastY = p.y;
       }
-      ctx.drawImage(art.weapon(weapon.id), -24, -24, 48, 48);
+      const mdx = p.x - hs.lastX,
+        mdy = p.y - hs.lastY,
+        mdist = Math.hypot(mdx, mdy);
+      hs.lastX = p.x;
+      hs.lastY = p.y;
+      if (dt > 0) hs.speed += (mdist / dt - hs.speed) * Math.min(1, dt * 14);
+      const fc = Math.cos(p.facing);
+      if (Math.abs(fc) > 0.22) hs.flip = fc < 0 ? -1 : 1;
+      const walking = hs.speed > 30 && s.mode === "playing" && !(p.dashTime > 0);
+      if (walking) {
+        const dir = mdx * hs.flip >= -0.01 ? 1 : -1; // caminar hacia atrás si se apunta al revés
+        hs.walk = (((hs.walk + (dir * mdist) / STRIDE) % 1) + 1) % 1;
+        const half = Math.floor(hs.walk * 2);
+        if (half !== hs.stepHalf) {
+          hs.cues.push({ name: "footstep", opts: { foot: half } });
+          if (half === 0 && s.hero !== "inquisidor") hs.cues.push({ name: "armorClank" });
+          if (layers.particles && !reduced)
+            particles.emit(p.x - hs.flip * 3, p.y + 15, "#9a9a86", 2, 18, 0.35, "dust");
+        }
+        hs.stepHalf = half;
+      }
+      let anim = "idle",
+        fi = 0,
+        flash = false;
+      if (s.mode === "dead") {
+        if (hs.deathAt === null) hs.deathAt = animClock;
+        anim = "death";
+        fi = Math.min(7, Math.floor(((animClock - hs.deathAt) / ANIMS.death.dur) * 8));
+      } else {
+        hs.deathAt = null;
+        if (p.dashTime > 0) {
+          anim = "dash";
+          fi = Math.min(3, Math.max(0, Math.floor((1 - p.dashTime / 0.25) * 4)));
+        } else if (s.time - p.lastDamage < ANIMS.hit.dur) {
+          anim = "hit";
+          fi = Math.min(2, Math.floor(((s.time - p.lastDamage) / ANIMS.hit.dur) * 3));
+          flash = s.time - p.lastDamage < 0.08;
+        } else if (walking) {
+          anim = "walk";
+          fi = Math.floor(hs.walk * 8) % 8;
+        } else fi = Math.floor(((animClock % 1.6) / 1.6) * 8) % 8;
+      }
+      ctx.drawImage(sprites.shadow(), p.x - 25, p.y + 11, 50, 17);
+      ctx.drawImage(sprites.halo(), p.x - 50, p.y - 58, 100, 100);
+      let swing = null;
+      if (hs.swing) {
+        const t = animClock - hs.swing.start;
+        if (t > SWINGS[hs.swing.variant].keys.at(-1)[0]) hs.swing = null;
+        else swing = { variant: hs.swing.variant, t };
+      }
+      const since = animClock - hs.lastShot,
+        charge = Math.max(0, 1 - p.attackCd / (wd.cooldown || 0.6));
+      lastPlayerScreen = {
+        x: ((p.x - view.x) * scale * dpr + originX) / dpr,
+        y: ((p.y - 12 - view.y) * scale * dpr + originY) / dpr,
+      };
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.scale(hs.flip * HERO_SCALE, HERO_SCALE);
+      ctx.globalAlpha = p.invuln > 0 && s.mode === "playing" ? 0.82 + 0.18 * Math.sin(s.time * 40) : 1;
+      drawFigure(ctx, {
+        hero: s.hero,
+        skin: meta.selectedSkin,
+        anim,
+        fi,
+        flash,
+        la: Math.atan2(Math.sin(p.facing), Math.cos(p.facing) * hs.flip),
+        weapon: wd.id,
+        swing: wd.projectile ? null : swing,
+        bow: bowState(since, charge, Math.max(0, since - (wd.cooldown || 0.5))),
+        walk: hs.walk,
+        shooting: since < (wd.cooldown || 0.5) + 0.6,
+        clock: animClock,
+        range: wd.range / HERO_SCALE,
+        trailCtx: true,
+      });
       ctx.restore();
       ctx.globalAlpha = 1;
-      if (p.swing > 0 && !weapon.projectile) {
-        const progress = 1 - p.swing / 0.16;
-        const trailRange = weapon.range;
-        for (let i = 4; i >= 0; i--) {
-          ctx.save();
-          ctx.rotate(-0.7 + progress * 1.4 - i * 0.14);
-          ctx.globalAlpha = (1 - i / 5) * (1 - progress) * 0.75;
-          ctx.drawImage(
-            slash,
-            -trailRange,
-            -trailRange,
-            trailRange * 2,
-            trailRange * 2,
-          );
-          ctx.restore();
-        }
-        ctx.globalAlpha = 1;
-        const wp = weaponData(p.weapons[s.activeSlot]);
-        const range = wp.projectile ? 65 : wp.range;
-        ctx.drawImage(slash, -range, -range, range * 2, range * 2);
-        ctx.fillStyle = "#ffdc8822";
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.arc(
-          0,
-          0,
-          wp.projectile ? 65 : wp.range,
-          -(wp.arc || 1) / 2,
-          (wp.arc || 1) / 2,
-        );
-        ctx.closePath();
-        ctx.fill();
-        ctx.strokeStyle = "#fff1b5";
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.arc(
-          0,
-          0,
-          wp.projectile ? 40 : wp.range,
-          -(wp.arc || 1) / 2,
-          (wp.arc || 1) / 2,
-        );
-        ctx.stroke();
-      }
-      ctx.restore();
       if (p.dome > 0) {
         circle(p.x, p.y, 95, "#acd9ff22");
         ctx.strokeStyle = "#b4e4ff";
@@ -1000,17 +1263,13 @@ export function createRenderer(canvas) {
       }
       for (const particle of layers.particles ? particles.active : []) {
         ctx.globalAlpha = Math.min(1, particle.life / particle.max);
-        if (particle.kind === "arrow") {
-          ctx.save();
-          ctx.translate(particle.x, particle.y);
-          ctx.rotate(particle.angle);
+        if (particle.kind === "streak") {
           ctx.strokeStyle = particle.color;
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 1.8;
           ctx.beginPath();
-          ctx.moveTo(-13, 0);
-          ctx.lineTo(5, 0);
+          ctx.moveTo(particle.x, particle.y);
+          ctx.lineTo(particle.x - particle.vx * 0.035, particle.y - particle.vy * 0.035);
           ctx.stroke();
-          ctx.restore();
         } else
           circle(
             particle.x,
@@ -1020,6 +1279,35 @@ export function createRenderer(canvas) {
           );
       }
       ctx.globalAlpha = 1;
+      // Cuadro de impacto: destello en estrella que se mantiene durante el parón.
+      for (let i = hs.flashes.length - 1; i >= 0; i--) {
+        const f = hs.flashes[i],
+          age = animClock - f.t;
+        if (age > 0.13) {
+          hs.flashes.splice(i, 1);
+          continue;
+        }
+        const k = 1 - age / 0.13,
+          r = (f.heavy ? 20 : 14) * (0.6 + 0.4 * k);
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        ctx.globalAlpha = k * 0.8;
+        ctx.drawImage(sprites.glowDot("#fff1c4"), f.x - r, f.y - r, r * 2, r * 2);
+        ctx.globalAlpha = k;
+        ctx.translate(f.x, f.y);
+        ctx.rotate(f.a + 0.4);
+        ctx.fillStyle = "#fffbe8";
+        for (let j = 0; j < 4; j++) {
+          ctx.rotate(Math.PI / 2);
+          ctx.beginPath();
+          ctx.moveTo(0, -2.2);
+          ctx.lineTo(r * (j % 2 ? 0.7 : 1.15), 0);
+          ctx.lineTo(0, 2.2);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.restore();
+      }
       const tint = ["#051c13d0", "#071323df", "#240920dc"][
         Math.floor((s.floor - 1) / 3)
       ];

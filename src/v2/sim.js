@@ -189,10 +189,11 @@ export function spawnEnemy(s, type, r, boss = false) {
   s.enemies.push(e);
   return e;
 }
-function hit(s, e, damage, knockback = 0) {
+function hit(s, e, damage, knockback = 0, melee = false) {
   if (e.hp <= 0 || e.spawn > 0) return;
   e.hp -= damage;
-  s.events.push({ type: "hit", x: e.x, y: e.y, heavy: damage >= 75 });
+  // melee/etype/radius: datos sólo de presentación (sincronizar el impacto con la hoja)
+  s.events.push({ type: "hit", x: e.x, y: e.y, heavy: damage >= 75, melee });
   s.effects.push({
     kind: "number",
     x: e.x,
@@ -213,7 +214,10 @@ function hit(s, e, damage, knockback = 0) {
       { kind: "soul", x: e.x, y: e.y, t: 1 },
     );
     s.kills++;
-    s.events.push({ type: e.boss ? "bossKill" : "kill", x: e.x, y: e.y });
+    s.events.push({
+      type: e.boss ? "bossKill" : "kill", x: e.x, y: e.y, melee,
+      etype: e.type, radius: e.radius, facing: e.facing || 0,
+    });
     s.drops.push({ kind: "coin", x: e.x, y: e.y, amount: e.boss ? 80 : 4 });
     if (random(s) < 0.12)
       s.drops.push({
@@ -485,12 +489,13 @@ function step(s, dt, input) {
       }
     }
   }
-  if (
-    p.attackCd > 0 &&
-    p.attackCd <= dt &&
-    weaponData(p.weapons[s.activeSlot]).projectile
-  )
-    s.events.push({ type: "draw" });
+  {
+    // "draw": el arquero vuelve a tensar (crujido del arco) poco después de soltar la flecha.
+    const w = weaponData(p.weapons[s.activeSlot]),
+      at = (w.cooldown || 0.5) - 0.14;
+    if (w.projectile && p.attackCd <= at && p.attackCd > at - dt)
+      s.events.push({ type: "draw" });
+  }
   s.target = autoAim(s);
   if (s.target) p.facing = Math.atan2(s.target.y - p.y, s.target.x - p.x);
   if (input.interact) interact(s);
@@ -541,7 +546,7 @@ function step(s, dt, input) {
           Math.abs(diff) < w.arc / 2 &&
           lineOfSight(s.dungeon, p, e)
         )
-          hit(s, e, damage, w.knockback || 15);
+          hit(s, e, damage, w.knockback || 15, true);
       }
   }
   for (const e of s.enemies) {

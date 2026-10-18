@@ -190,7 +190,7 @@ export function createArt() {
           hammer: "M6 28L22 12 M12 7L19 2L30 14L24 20Z",
           spear: "M3 30L25 8 M21 9L29 2L27 13Z",
           axes: "M4 28L26 4 M4 4L26 28 M2 3L13 5L5 14Z M20 3L30 6L24 14Z",
-          crossbow: "M5 5Q30 2 27 27 M5 5L27 27 M4 29L28 5 M20 4L29 3L28 12",
+          crossbow: "M9 3Q32 6 29 23 M9 3L29 23 M5 27L26 6 M22 5L27 5L27 10",
           staff: "M5 29L23 11 M23 2L29 8L23 14L17 8Z",
         };
         c.stroke(new Path2D(paths[kind] || paths.sword));

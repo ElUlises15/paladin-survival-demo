@@ -36,7 +36,7 @@ export const HEROES = {
 export const WEAPONS = [
   {
     id: "sword",
-    name: "Espada del Alba",
+    name: "Espada Larga",
     damage: 24,
     range: 105,
     arc: 1.7,
@@ -64,7 +64,7 @@ export const WEAPONS = [
   },
   {
     id: "crossbow",
-    name: "Ballesta Bendita",
+    name: "Arco Largo",
     damage: 27,
     range: 560,
     cooldown: 0.5,

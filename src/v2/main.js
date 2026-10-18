@@ -63,6 +63,7 @@ let meta = store.load(),
   busySince = 0,
   loopErrors = 0,
   victoryAt = 0,
+  deathAt = 0,
   cancelModal = null,
   versionTaps = 0,
   debugVisible = new URLSearchParams(location.search).has("debug"),
@@ -85,8 +86,8 @@ function toast(message) {
 function icon(kind) {
   const paths = {
     gem: "M8 3h16l6 9-14 18L2 12Z M2 12h28 M8 3l8 27L24 3",
-    sword: "M6 25 25 6l2-2 1 5-18 19M5 20l9 9M4 29l5-5",
-    crossbow: "M6 5q23 0 21 21M5 6l21 21M4 28 28 4M20 4h8v8",
+    sword: "M8 24 27 5l1-1v1L9 25M5 20l7 7M3 29l4-4",
+    crossbow: "M11 2q17 14 0 28M11 2v28M4 16h24M24 12l5 4-5 4M4 13l3 3-3 3",
     staff: "M6 28 23 11M23 3l5 5-5 5-5-5Z",
     hammer: "M7 28 21 14M13 5l6-4 12 12-5 6Z",
     spear: "M4 29 24 9M21 10l7-7-1 9Z",
@@ -225,7 +226,7 @@ function show(name) {
 function lobby() {
   const vip = vipActive(meta, Date.now());
   if (meta.selectedSkin === "stellar" && !vip) meta.selectedSkin = "classic";
-  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">◈ ${meta.almas} almas &nbsp; ✧ ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario${meta.completedOnce ? ' <span class="completion-crest" title="Venciste al Abismo">♜</span>' : ""}</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? " · ✧ Pase del Paladín" : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.1.2 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
+  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">◈ ${meta.almas} almas &nbsp; ✧ ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario${meta.completedOnce ? ' <span class="completion-crest" title="Venciste al Abismo">♜</span>' : ""}</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? " · ✧ Pase del Paladín" : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.2.0 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
   const m = $("menu");
   if (meta.checkpoint)
     addButton(m, "Continuar partida", () => start(true), "primary");
@@ -630,7 +631,7 @@ function settings() {
     toast("Vas a ver el tutorial al jugar");
   });
   const note = document.createElement("p");
-  note.textContent = "Español rioplatense · v2.1.2";
+  note.textContent = "Español rioplatense · v2.2.0";
   c.append(note);
   addButton(c, "Borrar progreso", async () => {
     if (
@@ -649,12 +650,18 @@ function settings() {
 }
 function start(cont = false, options = {}) {
   victoryAt = 0;
+  deathAt = 0;
   flowRewarded = false;
   result = null;
   updateHud.bossId = null;
   const ghost = $("hpghost");
   if (ghost) ghost.value = 0;
   renderer.resetEffects();
+  try {
+    renderer.warmHero(meta.selectedHero, meta.selectedSkin);
+  } catch (e) {
+    errlog.record("warm", e);
+  }
   state = createRun(meta, {
     seed: Date.now() >>> 0,
     checkpoint: cont ? meta.checkpoint : null,
@@ -679,6 +686,12 @@ function pause() {
     return;
   }
   if (busy) return;
+  if (page === "game" && state?.mode === "dead") {
+    // Muerte pendiente (animación de caída): pausar = ir directo a la pantalla de muerte.
+    deathAt = 0;
+    show("death");
+    return;
+  }
   if (page === "game" && state?.mode === "victory") {
     // Victoria pendiente (cinemática): no se puede pausar ni "des-ganar"; se cierra ya.
     victoryAt = 0;
@@ -1045,7 +1058,7 @@ function events() {
       if (style && !(e.type === "damage" && state.mode === "dead"))
         platform.haptics.impact(style);
     }
-    renderer.event(e, state, meta);
+    const deferred = renderer.event(e, state, meta) === "deferred";
     const ranged = weaponData(
       state.player.weapons[state.activeSlot],
     ).projectile;
@@ -1057,7 +1070,7 @@ function events() {
       lock: "doorClose",
       room: "doorOpen",
       roar: "bossRoar",
-      arrowWall: "arrowHit",
+      arrowWall: "arrowWall",
       slam: "bossSlam",
       damage: "playerHurt",
       kill: "enemyDeath",
@@ -1067,8 +1080,10 @@ function events() {
       heal: "pickupHeal",
       attack: ranged ? "arrowRelease" : "swordSwing",
     }[e.type];
-    if (sound) audio.play(sound);
-    if (e.type === "hit") audio.play("enemyHit");
+    // golpe de espada: el sonido metálico lo emite el renderer cuando la hoja llega (takeCues)
+    if (sound && !((e.type === "hit" || e.type === "kill") && deferred))
+      audio.play(sound, e.type === "attack" && !ranged ? { variant: renderer.swingVariant } : { heavy: e.heavy });
+    if (e.type === "hit" && !deferred) audio.play("enemyHit");
     if (e.type === "draw") audio.play("bowDraw");
     if (e.type === "poor") toast("Te falta oro");
     if (e.type === "floor") {
@@ -1271,6 +1286,7 @@ const LAYER_LABELS = {
   ambient: "Partículas ambientales",
   smoothing: "Suavizado de imagen",
   snap: "Cámara alineada a píxeles",
+  sprites: "Héroe con sprites dibujados",
 };
 function setupLayersPanel() {
   let saved = {};
@@ -1378,7 +1394,8 @@ function frame(now) {
   const dt = Math.min(0.1, Math.max(0, (now - last) / 1000) || 0);
   last = now;
   fps += ((dt ? 1 / dt : 60) - fps) * 0.05;
-  acc += dt;
+  // Parón de impacto: mientras dure, la simulación no avanza (el render sigue).
+  if (!(renderer.hitstop > 0)) acc += dt;
   const vp = viewport();
   if (page === "game" && state && !document.hidden && !(vp.h > vp.w * 1.05)) {
     try {
@@ -1393,13 +1410,24 @@ function frame(now) {
         updateRun(state, 1 / 60, controls.read());
         events();
         acc -= 1 / 60;
-        if (state.mode === "dead") show("death");
-        else if (state.mode === "victory" && !victoryAt) {
+        if (state.mode === "dead") {
+          if (!deathAt) deathAt = now; // dejar ver la caída del héroe antes del cartel
+        } else if (state.mode === "victory" && !victoryAt) {
           // Dejar ver la muerte del jefe final (destello, partículas, cámara lenta) antes del cartel.
           victoryAt = now;
           $("transition").textContent = "¡Victoria!";
           $("transition").hidden = false;
         }
+      }
+      if (state.mode === "dead" && !deathAt) deathAt = now;
+      if (state.mode === "victory" && !victoryAt) {
+        victoryAt = now;
+        $("transition").textContent = "¡Victoria!";
+        $("transition").hidden = false;
+      }
+      if (state.mode === "dead" && now - deathAt > 1300) {
+        deathAt = 0;
+        show("death");
       }
       if (state.mode === "victory" && victoryAt && now - victoryAt > 1800) {
         victoryAt = 0;
@@ -1433,7 +1461,9 @@ function frame(now) {
         : interpolation.render(state, page === "game" ? acc / (1 / 60) : 1),
       meta,
       dt,
+      page !== "game" || document.hidden,
     );
+    for (const cue of renderer.takeCues()) audio.play(cue.name, cue.opts);
   } catch (e) {
     errlog.record("render", e);
   }
