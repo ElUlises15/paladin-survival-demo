@@ -1,5 +1,7 @@
 import { installViewport, viewport, measure } from "./viewport.js";
 import { iconSvg } from "./icons.js";
+import { createGallery } from "./gallery.js";
+import { weaponCost } from "./catalog.js";
 import { createErrorLog, createLoopGuard } from "./watchdog.js";
 import {
   HEROES,
@@ -72,6 +74,13 @@ let meta = store.load(),
 const renderer = createRenderer($("game")),
   audio = createSound(window, meta.settings),
   interpolation = createInterpolation();
+const gallery = createGallery({
+  meta: () => meta,
+  vip: () => vipActive(meta, Date.now()),
+  button,
+  portrait: (cv, hero, skin, o) => renderer.portrait(cv, hero, skin, { dir: "front", ...o }),
+  act: (kind, id) => galleryAct(kind, id),
+});
 recordSession(meta, Date.now());
 persist();
 function persist() {
@@ -100,7 +109,8 @@ function withIcons(text) {
     /[&<>"]/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
   );
-  return esc.replace(/[✧◈●♥♜]/g, (g) => iconSvg(GLYPHS[g], { cls: "inline" }));
+  // número + ícono van pegados (no se parten en dos renglones)
+  return esc.replace(/(\S+ )?([✧◈●♥♜])/g, (_, pre = "", g) => `<span class="nw">${pre}${iconSvg(GLYPHS[g], { cls: "inline" })}</span>`);
 }
 function button(label, action, cls = "") {
   const b = document.createElement("button");
@@ -144,6 +154,7 @@ function panel(title, description = "") {
   return c;
 }
 function show(name) {
+  gallery?.closeSheet(true);
   page = name;
   screen.dataset.page = name;
   interpolation.reset();
@@ -231,7 +242,7 @@ function show(name) {
 function lobby() {
   const vip = vipActive(meta, Date.now());
   if (meta.selectedSkin === "stellar" && !vip) meta.selectedSkin = "classic";
-  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">${iconSvg("soul", { cls: "inline" })} ${meta.almas} almas &nbsp; ${iconSvg("gem", { cls: "inline" })} ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario${meta.completedOnce ? ` <span class="completion-crest" title="Venciste al Abismo">${iconSvg("crown")}</span>` : ""}</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? ` · ${iconSvg("star", { cls: "inline" })} Pase del Paladín` : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.3.0 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
+  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">${iconSvg("soul", { cls: "inline" })} ${meta.almas} almas &nbsp; ${iconSvg("gem", { cls: "inline" })} ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario${meta.completedOnce ? ` <span class="completion-crest" title="Venciste al Abismo">${iconSvg("crown")}</span>` : ""}</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? ` · ${iconSvg("star", { cls: "inline" })} Pase del Paladín` : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.3.1 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
   const m = $("menu");
   if (meta.checkpoint)
     addButton(m, "Continuar partida", () => start(true), "primary");
@@ -269,7 +280,7 @@ function lobby() {
   a.textContent = "Horda clásica";
   m.append(a);
   const d = daily(meta, Date.now());
-  const gift = addButton(m, `Regalo diario · +50 ✧ (${d.ads}/3)`, async () => {
+  const gift = addButton(m, `Regalo +50 ✧ (${d.ads}/3)`, async () => {
     if (await rewarded("daily")) {
       if (claimDaily(meta, Date.now(), "ad")) {
         persist();
@@ -310,13 +321,21 @@ function tabs(options, selected, change) {
   }
   screen.append(nav);
 }
+function currencyBadge() {
+  const span = document.createElement("span");
+  span.className = "currency";
+  span.innerHTML = `${iconSvg("soul", { cls: "inline" })} ${meta.almas} &nbsp; ${iconSvg("gem", { cls: "inline" })} ${meta.gemas}`;
+  span.setAttribute("aria-label", `${meta.almas} almas, ${meta.gemas} gemas`);
+  return span;
+}
 function heroes() {
-  layout("Héroes y apariencias");
+  layout("Héroes y armas");
+  screen.querySelector(".header h2").after(currencyBadge());
   tabs(
     [
       ["heroes", "Héroes"],
-      ["skins", "Apariencias"],
       ["weapons", "Armas"],
+      ["skins", "Apariencias"],
     ],
     heroTab,
     (id) => {
@@ -324,119 +343,59 @@ function heroes() {
       show("heroes");
     },
   );
-  const grid = document.createElement("div");
-  grid.className = "cards";
-  for (const [id, h] of Object.entries(HEROES)) {
-    const owned = meta.heroes.includes(id),
-      c = panel(h.name, `${h.hp} vida · ${h.armor} escudo · ${h.skill}`);
-    const portrait = document.createElement("canvas");
-    portrait.width = 100;
-    portrait.height = 80;
-    portrait.className = "hero-portrait";
-    renderer.portrait(portrait, id, meta.selectedSkin);
-    c.prepend(portrait);
-    for (const [label, value, max] of [
-      ["Vida", h.hp, 150],
-      ["Escudo", h.armor, 30],
-      ["Velocidad", h.speed, 300],
-    ]) {
-      const stat = document.createElement("label");
-      stat.className = "hero-stat";
-      stat.textContent = label;
-      const bar = document.createElement("meter");
-      bar.max = max;
-      bar.value = value;
-      stat.append(bar);
-      c.append(stat);
+  screen.append(gallery.grid(heroTab === "heroes" ? "hero" : heroTab === "weapons" ? "weapon" : "skin"));
+}
+// Compras/equipamiento desde la galería (fichas y hoja de detalle).
+async function galleryAct(kind, id) {
+  if (kind === "hero") {
+    const h = HEROES[id];
+    if (!meta.heroes.includes(id)) {
+      if (meta.almas < h.cost) return toast(`Te faltan ${h.cost - meta.almas} almas`);
+      meta.almas -= h.cost;
+      meta.heroes.push(id);
+      audio.play("levelUp");
+      toast(`¡${h.name} se une a la causa!`);
     }
-    const desc = document.createElement("p");
-    desc.textContent = {
-      paladin: "Luz sagrada: golpeá a todos los enemigos cercanos.",
-      cruzada: "Cúpula protectora: resistí el ataque bajo tu escudo.",
-      inquisidor: "Juicio: desatá energía sobre tus enemigos.",
-    }[id];
-    c.append(desc);
-    if (meta.selectedHero === id) c.classList.add("selected");
-    addButton(
-      c,
-      owned
-        ? meta.selectedHero === id
-          ? "Elegido"
-          : "Elegir"
-        : `Desbloquear · ${h.cost} almas`,
-      () => {
-        if (!owned) {
-          if (meta.almas < h.cost) return toast("Te faltan almas");
-          meta.almas -= h.cost;
-          meta.heroes.push(id);
-        }
-        meta.selectedHero = id;
-        persist();
-        show("heroes");
-      },
-    );
-    grid.append(c);
-  }
-  if (heroTab === "heroes") screen.append(grid);
-  const skins = document.createElement("div");
-  skins.className = "cards";
-  for (const sk of SKINS) {
-    const owned =
-        meta.skins.includes(sk.id) || (sk.vip && vipActive(meta, Date.now())),
-      c = panel(
-        sk.name,
-        sk.vip
-          ? "Exclusiva del Pase activo"
-          : sk.product
-            ? "Incluida en el pack inicial"
-            : `${sk.cost} gemas · Apariencia para tu héroe`,
-      );
-    addButton(
-      c,
-      owned
-        ? meta.selectedSkin === sk.id
-          ? "Elegida"
-          : "Usar"
-        : sk.vip || sk.product
-          ? "Ver en tienda"
-          : `Comprar · ${sk.cost} ✧`,
-      () => {
-        if (!owned) {
-          if (sk.vip || sk.product) return show("shop");
-          if (meta.gemas < sk.cost) return toast("Te faltan gemas");
-          meta.gemas -= sk.cost;
-          meta.skins.push(sk.id);
-        }
-        meta.selectedSkin = sk.id;
-        persist();
-        show("heroes");
-      },
-    );
-    skins.append(c);
-  }
-  if (heroTab === "skins") screen.append(skins);
-  const arms = document.createElement("div");
-  arms.className = "cards";
-  for (const [i, w] of WEAPONS.entries()) {
-    const owned = meta.weapons.includes(w.id),
-      cost = 150 + i * 65,
-      c = panel(
-        w.name,
-        owned
-          ? "Disponible en cofres y tiendas"
-          : `Desbloqueo permanente · ${cost} almas`,
-      );
-    const b = addButton(c, owned ? "Desbloqueada" : "Desbloquear", () => {
-      if (meta.almas < cost) return toast("Te faltan almas");
+    meta.selectedHero = id;
+  } else if (kind === "weapon") {
+    if (!meta.weapons.includes(id)) {
+      const cost = weaponCost(id);
+      if (meta.almas < cost) return toast(`Te faltan ${cost - meta.almas} almas`);
       meta.almas -= cost;
-      meta.weapons.push(w.id);
-      persist();
-      show("heroes");
-    });
-    b.disabled = owned;
-    arms.append(c);
+      meta.weapons.push(id);
+      audio.play("levelUp");
+      toast(`Desbloqueaste ${WEAPONS.find((w) => w.id === id).name}`);
+    } else meta.startWeapon = id;
+  } else {
+    const sk = SKINS.find((v) => v.id === id),
+      owned = meta.skins.includes(id) || (sk.vip && vipActive(meta, Date.now()));
+    if (!owned) {
+      if (sk.vip || sk.product) {
+        gallery.closeSheet(true);
+        shopTab = sk.vip ? "vip" : "extras";
+        previous = page;
+        return show("shop");
+      }
+      if (meta.gemas < sk.cost) return toast(`Te faltan ${sk.cost - meta.gemas} gemas`);
+      meta.gemas -= sk.cost;
+      meta.skins.push(id);
+    }
+    meta.selectedSkin = id;
   }
-  if (heroTab === "weapons") screen.append(arms);
+  persist();
+  refreshGalleries();
+}
+function refreshGalleries() {
+  for (const g of screen.querySelectorAll(".item-grid")) {
+    const fresh = gallery.grid(g.dataset.kind);
+    g.replaceWith(fresh);
+  }
+  const cur = screen.querySelector(".header .currency");
+  if (cur) cur.replaceWith(currencyBadge());
+  if (page === "shop") {
+    const h = screen.querySelector(".header h2");
+    if (h) h.textContent = `Tienda · ${meta.gemas} gemas`;
+  }
 }
 function talents() {
   layout("Talentos · solo con almas");
@@ -509,6 +468,7 @@ function shop() {
       ["gems", "Gemas"],
       ["extras", "Extras"],
       ["vip", "Pase"],
+      ["arsenal", "Héroes y armas"],
     ],
     shopTab,
     (id) => {
@@ -516,6 +476,20 @@ function shop() {
       show("shop");
     },
   );
+  if (shopTab === "arsenal") {
+    screen.querySelector(".header h2").after(currencyBadge());
+    const note = document.createElement("p");
+    note.className = "shop-note";
+    note.textContent = "Héroes y armas se desbloquean con almas, nunca con dinero. Tocá una ficha para ver todo y comparar.";
+    screen.append(note);
+    for (const [title, kind] of [["Héroes", "hero"], ["Armas", "weapon"]]) {
+      const h = document.createElement("h3");
+      h.className = "gallery-heading";
+      h.textContent = title;
+      screen.append(h, gallery.grid(kind));
+    }
+    return;
+  }
   const note = document.createElement("p");
   note.textContent =
     "Las compras dan gemas y cosméticos. Los talentos y los héroes se consiguen jugando. Los anuncios con recompensa son opcionales.";
@@ -636,7 +610,7 @@ function settings() {
     toast("Vas a ver el tutorial al jugar");
   });
   const note = document.createElement("p");
-  note.textContent = "Español rioplatense · v2.3.0";
+  note.textContent = "Español rioplatense · v2.3.1";
   c.append(note);
   addButton(c, "Borrar progreso", async () => {
     if (
@@ -686,6 +660,7 @@ function transition() {
   transition.timer = setTimeout(() => ($("transition").hidden = true), 1800);
 }
 function pause() {
+  if (gallery.closeSheet()) return;
   if (!modal.hidden) {
     cancelModal?.();
     return;
@@ -1001,6 +976,7 @@ platform.app.onResume(() => {
   persist();
 });
 platform.app.onBack(() => {
+  if (gallery.closeSheet()) return;
   if (!modal.hidden) {
     cancelModal?.();
     return;

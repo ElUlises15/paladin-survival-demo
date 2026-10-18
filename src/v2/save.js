@@ -11,6 +11,7 @@ export function freshSave() {
     weapons: ["sword", "crossbow"],
     skins: ["classic"],
     selectedHero: "paladin",
+    startWeapon: "sword",
     selectedSkin: "classic",
     talents: {},
     settings: {
@@ -53,6 +54,7 @@ export function migrateSave(raw) {
         ]),
       ];
   if (d.heroes.includes(raw.selectedHero)) d.selectedHero = raw.selectedHero;
+  if (d.weapons.includes(raw.startWeapon)) d.startWeapon = raw.startWeapon;
   if (d.skins.includes(raw.selectedSkin) || raw.selectedSkin === "stellar")
     d.selectedSkin = raw.selectedSkin;
   for (const [k, v] of Object.entries(TALENTS))

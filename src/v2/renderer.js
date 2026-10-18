@@ -520,15 +520,50 @@ export function createRenderer(canvas) {
         .getContext("2d")
         .drawImage(art.crest(), 0, 0, canvas.width, canvas.height);
     },
-    portrait(canvas, hero, skin) {
+    /** Devuelve true si se dibujó con el atlas (false = respaldo procedural; conviene repintar luego). */
+    portrait(canvas, hero, skin, opts = {}) {
+      const sprite = !!(layers.sprites && spriteHeroes.get(hero));
+      // Se dibuja en un lienzo auxiliar holgado, se recorta al contorno real y se encaja centrado
+      // (el atlas y el respaldo procedural tienen alturas distintas).
+      const W = 220,
+        H = 220,
+        k0 = 1.9;
+      const tmp = document.createElement("canvas");
+      tmp.width = W;
+      tmp.height = H;
+      const t = tmp.getContext("2d", { willReadFrequently: true });
+      t.translate(W / 2, H * 0.8);
+      t.scale(k0, k0);
+      drawFigure(t, { hero, skin, anim: "idle", fi: 0, la: 0, weapon: opts.weapon || "sword", clock: 0, dir: opts.dir });
+      let x0 = W, y0 = H, x1 = 0, y1 = 0;
+      const px = t.getImageData(0, 0, W, H).data;
+      for (let y = 0; y < H; y++)
+        for (let x = 0; x < W; x++)
+          if (px[(y * W + x) * 4 + 3] > 24) {
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+          }
       const c = canvas.getContext("2d");
       c.clearRect(0, 0, canvas.width, canvas.height);
-      c.save();
-      const k = canvas.height / 62;
-      c.translate(canvas.width / 2, canvas.height * 0.62);
-      c.scale(k, k);
-      drawFigure(c, { hero, skin, anim: "idle", fi: 0, la: 0, weapon: "sword", clock: 0 });
-      c.restore();
+      if (x1 > x0 && y1 > y0) {
+        const bw = x1 - x0 + 1,
+          bh = y1 - y0 + 1,
+          pad = 0.08,
+          f = Math.min((canvas.width * (1 - 2 * pad)) / bw, (canvas.height * (1 - 2 * pad)) / bh);
+        c.imageSmoothingQuality = "high";
+        c.drawImage(tmp, x0, y0, bw, bh, (canvas.width - bw * f) / 2, canvas.height * (1 - pad) - bh * f, bw * f, bh * f);
+      }
+      if (opts.silhouette) {
+        // bloqueado: silueta oscura
+        c.save();
+        c.globalCompositeOperation = "source-atop";
+        c.fillStyle = "#07090c";
+        c.fillRect(0, 0, canvas.width, canvas.height);
+        c.restore();
+      }
+      return sprite;
     },
     /** Precalienta el atlas del héroe (llamar al empezar la partida para no trabar el primer paso). */
     warmHero(hero, skin) {

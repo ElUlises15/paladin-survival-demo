@@ -6,7 +6,7 @@ import {
   roomAt,
   solid,
 } from "./dungeon.js";
-import { HEROES, BOSSES, weapon, weaponData, BOW, bowShot } from "./data.js";
+import { HEROES, BOSSES, weapon, weaponData, BOW, bowShot, CRIT_MULT, critRoll } from "./data.js";
 export function createRun(
   meta,
   { seed = 1, floor = 1, checkpoint = null } = {},
@@ -46,10 +46,7 @@ export function createRun(
       speed: h.speed,
       facing: 0,
       oro: c?.oro ?? 15 * (t.bolsa || 0),
-      weapons: c?.weapons?.map((w) => ({ ...w })) || [
-        weapon(),
-        weapon("crossbow"),
-      ],
+      weapons: c?.weapons?.map((w) => ({ ...w })) || startingWeapons(meta),
       attackCd: 0,
       dashCd: 0,
       dashTime: 0,
@@ -189,17 +186,17 @@ export function spawnEnemy(s, type, r, boss = false) {
   s.enemies.push(e);
   return e;
 }
-function hit(s, e, damage, knockback = 0, melee = false) {
+function hit(s, e, damage, knockback = 0, melee = false, crit = false) {
   if (e.hp <= 0 || e.spawn > 0) return;
   e.hp -= damage;
   // melee/etype/radius: datos sólo de presentación (sincronizar el impacto con la hoja)
-  s.events.push({ type: "hit", x: e.x, y: e.y, heavy: damage >= 75, melee });
+  s.events.push({ type: "hit", x: e.x, y: e.y, heavy: damage >= 75 || crit, melee, crit });
   s.effects.push({
     kind: "number",
     x: e.x,
     y: e.y - 20,
     value: Math.round(damage),
-    crit: damage >= 75,
+    crit: crit || damage >= 75,
     t: 0.8,
   });
   e.stun = 0.15;
@@ -386,6 +383,17 @@ export function interact(s) {
   s.events.push({ type: "pickup" });
   return true;
 }
+// Arma equipada (elegida en Héroes → Armas) en la ranura 1; la 2 es el arco (o la espada si el arco es la principal).
+export function startingWeapons(meta) {
+  const id = meta?.weapons?.includes(meta?.startWeapon) ? meta.startWeapon : "sword";
+  return [weapon(id), weapon(id === "crossbow" ? "sword" : "crossbow")];
+}
+// Golpe crítico por ataque (no por enemigo): determinista y sin tocar el RNG del mapa.
+function rollCrit(s, chance) {
+  const p = s.player;
+  p.critSeq = (p.critSeq || 0) + 1;
+  return critRoll(p.critSeq, chance, s.seed || 0);
+}
 function cancelDrawIfSwitched(s, held) {
   if (held.charge || !(s.player.draw > 0)) return;
   s.player.draw = 0;
@@ -536,6 +544,8 @@ function step(s, dt, input) {
       if (before < BOW.FULL && p.draw >= BOW.FULL) s.events.push({ type: "drawFull", level: 1 });
     } else if (!input.attack && p.draw > 0) {
       const shot = bowShot(held.damage * (1 + 0.05 * (s.talents.filo || 0) + p.buff), p.draw);
+      const crit = !shot.weak && rollCrit(s, held.crit);
+      if (crit) shot.damage *= CRIT_MULT;
       p.draw = 0;
       p.attackCd = shot.cooldown;
       p.swing = 0.16;
@@ -545,7 +555,7 @@ function step(s, dt, input) {
         vx: Math.cos(p.facing) * shot.speed,
         vy: Math.sin(p.facing) * shot.speed,
         radius: 6, life: shot.range / shot.speed, enemy: false,
-        damage: shot.damage, speed: shot.speed, pierce: shot.pierce, level: shot.level, hitIds: [],
+        damage: shot.damage, speed: shot.speed, pierce: shot.pierce, level: shot.level, hitIds: [], crit,
       });
     }
   }
@@ -559,7 +569,8 @@ function step(s, dt, input) {
     }
     p.swing = 0.16;
     s.events.push({ type: "attack" });
-    const damage = w.damage * (1 + 0.05 * (s.talents.filo || 0) + p.buff);
+    const crit = rollCrit(s, w.crit);
+    const damage = w.damage * (1 + 0.05 * (s.talents.filo || 0) + p.buff) * (crit ? CRIT_MULT : 1);
     if (w.projectile)
       s.bullets.push({
         x: p.x,
@@ -572,6 +583,7 @@ function step(s, dt, input) {
         damage,
         homing: w.homing,
         speed: w.projectile,
+        crit,
       });
     else
       for (const e of s.enemies) {
@@ -582,7 +594,7 @@ function step(s, dt, input) {
           Math.abs(diff) < w.arc / 2 &&
           lineOfSight(s.dungeon, p, e)
         )
-          hit(s, e, damage, w.knockback || 15, true);
+          hit(s, e, damage, w.knockback || 15, true, crit);
       }
   }
   for (const e of s.enemies) {
@@ -727,7 +739,7 @@ function step(s, dt, input) {
           Math.hypot(e.x - b.x, e.y - b.y) < e.radius + b.radius
         ) {
           if (b.hitIds && b.hitIds.includes(e.id)) continue;
-          hit(s, e, b.damage, 10 + 25 * (b.level || 0));
+          hit(s, e, b.damage, 10 + 25 * (b.level || 0), false, b.crit);
           if (b.pierce > 0) {
             b.pierce--;
             b.hitIds.push(e.id);

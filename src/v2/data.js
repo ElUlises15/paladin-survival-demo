@@ -41,6 +41,7 @@ export const WEAPONS = [
     range: 105,
     arc: 1.7,
     cooldown: 0.43,
+    crit: 0.1,
     icon: "⚔",
   },
   {
@@ -51,6 +52,7 @@ export const WEAPONS = [
     arc: 2.6,
     cooldown: 1,
     knockback: 90,
+    crit: 0.15,
     icon: "⚒",
   },
   {
@@ -60,6 +62,7 @@ export const WEAPONS = [
     range: 185,
     arc: 0.55,
     cooldown: 0.55,
+    crit: 0.12,
     icon: "➶",
   },
   {
@@ -70,6 +73,7 @@ export const WEAPONS = [
     cooldown: 0.5,
     projectile: 520,
     charge: true, // arco cargado: mantener = tensar, soltar = disparar (ver BOW / bowShot)
+    crit: 0.1,
     icon: "➹",
   },
   {
@@ -80,6 +84,7 @@ export const WEAPONS = [
     cooldown: 0.85,
     projectile: 250,
     homing: true,
+    crit: 0.05,
     icon: "✦",
   },
   {
@@ -90,6 +95,7 @@ export const WEAPONS = [
     arc: 2,
     cooldown: 0.32,
     hits: 2,
+    crit: 0.08,
     icon: "⚔",
   },
 ];
@@ -141,6 +147,13 @@ export function bowShot(baseDamage, draw) {
     pierce: full ? 1 : 0,
     cooldown: BOW.COOLDOWN,
   };
+}
+// Crítico: ×CRIT_MULT. Se decide con una secuencia de baja discrepancia (no consume el RNG del mapa).
+export const CRIT_MULT = 1.6;
+export function critRoll(n, chance, seed = 0) {
+  if (!(chance > 0)) return false;
+  const x = (n * 0.6180339887498949 + (seed % 9973) / 9973) % 1;
+  return x < chance;
 }
 export function weapon(id = "sword", rarity = 0) {
   return { id, rarity };
