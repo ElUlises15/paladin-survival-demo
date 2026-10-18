@@ -1,3 +1,4 @@
+import { viewport, cameraScale } from "./viewport.js";
 import { createArt } from "./art.js";
 import { TILE, SIZE } from "./dungeon.js";
 import { weaponData, SKINS, RARITIES } from "./data.js";
@@ -310,8 +311,7 @@ export function createRenderer(canvas) {
             : meta.settings.quality === "auto"
               ? Math.min(autoScale, maxDpr)
               : maxDpr,
-        w = innerWidth,
-        h = innerHeight;
+        { w, h } = viewport();
       if (
         canvas.width !== Math.round(w * dpr) ||
         canvas.height !== Math.round(h * dpr)
@@ -351,7 +351,7 @@ export function createRenderer(canvas) {
         return;
       }
       if (s.dungeon !== dungeon || lastFloor !== s.floor) build(s);
-      const scale = w < 1100 ? w / 690 : Math.min(w / 1050, h / 600);
+      const scale = cameraScale(w, h);
       camera.x +=
         (s.player.x + Math.cos(s.player.facing) * 32 - camera.x) *
         Math.min(1, dt * 9);

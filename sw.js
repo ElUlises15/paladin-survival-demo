@@ -1,7 +1,7 @@
 // Service worker de Paladin Survival RPG (PWA liviana).
 // Precachea los archivos estáticos para que el juego cargue rápido y funcione sin conexión.
 // Para publicar cambios: subir CACHE_VERSION → el SW nuevo descarga todo de nuevo y borra la caché vieja.
-const CACHE_VERSION = 'v2-polish-3';
+const CACHE_VERSION = 'v2.1-viewport-1';
 // Cache Storage es de todo el origen (elulises15.github.io): el nombre incluye el scope para no pisar
 // cachés de otros proyectos/subpaths del mismo origen.
 const CACHE_PREFIX = `paladin-mobile:${self.registration.scope}:`;
@@ -13,6 +13,7 @@ const PRECACHE = [
   'src/v2/style.css',
   'src/v2/dungeon.js',
   'src/v2/renderer.js',
+  'src/v2/viewport.js',
   'src/v2/art.js',
   'src/v2/main.js',
   'src/v2/save.js',

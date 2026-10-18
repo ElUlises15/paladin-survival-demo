@@ -1,3 +1,4 @@
+import { installViewport, viewport } from "./viewport.js";
 import {
   HEROES,
   WEAPONS,
@@ -29,6 +30,7 @@ import { platform, configureDemo } from "./platform.js";
 import { createControls } from "./input.js";
 import { createRenderer } from "./renderer.js";
 import { createAudio } from "../audio.js";
+installViewport();
 const $ = (id) => document.getElementById(id),
   screen = $("screen"),
   modal = $("modal");
@@ -1007,7 +1009,7 @@ function frame(now) {
   last = now;
   fps += ((dt ? 1 / dt : 60) - fps) * 0.05;
   acc += dt;
-  if (page === "game" && !document.hidden && !(innerHeight > innerWidth)) {
+  if (page === "game" && !document.hidden && !(viewport().h > viewport().w)) {
     while (acc >= 1 / 60 && page === "game") {
       updateRun(state, 1 / 60, controls.read());
       events();
@@ -1038,7 +1040,7 @@ if ("serviceWorker" in navigator && !window.Capacitor) {
     navigator.serviceWorker
       .register("sw.js")
       .then((reg) => {
-        reg.update();
+        reg.update()?.catch?.(() => {});
         const activate = () =>
           reg.waiting?.postMessage({ type: "SKIP_WAITING" });
         activate();

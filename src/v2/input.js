@@ -1,3 +1,4 @@
+import { viewport } from "./viewport.js";
 export function createControls(canvas, buttons, onPause) {
   const keys = new Set(),
     held = new Set(),
@@ -50,7 +51,7 @@ export function createControls(canvas, buttons, onPause) {
   window.addEventListener("blur", clear);
   document.addEventListener("visibilitychange", clear);
   canvas.addEventListener("pointerdown", (e) => {
-    if (e.clientX > innerWidth * 0.45 || pointer !== null) return;
+    if (e.clientX > viewport().w * 0.45 || pointer !== null) return;
     pointer = e.pointerId;
     origin = { x: e.clientX, y: e.clientY };
     joy.hidden = false;
@@ -64,11 +65,12 @@ export function createControls(canvas, buttons, onPause) {
     const x = e.clientX - origin.x,
       y = e.clientY - origin.y,
       d = Math.hypot(x, y),
-      m = Math.min(1, d / 52),
+      R = 52 * viewport().u,
+      m = Math.min(1, d / R),
       dead = 0.14;
     mx = d > 0 && m > dead ? ((x / d) * (m - dead)) / (1 - dead) : 0;
     my = d > 0 && m > dead ? ((y / d) * (m - dead)) / (1 - dead) : 0;
-    const f = d ? Math.min(52, d) / d : 0;
+    const f = d ? Math.min(R, d) / d : 0;
     knob.style.transform = `translate(${x * f}px,${y * f}px)`;
   });
   for (const type of ["pointerup", "pointercancel", "lostpointercapture"])
