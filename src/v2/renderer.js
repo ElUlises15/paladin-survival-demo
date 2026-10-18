@@ -12,26 +12,46 @@ export function snapCamera(camera, scale, dpr) {
   if (!(k > 0)) return { x: camera.x, y: camera.y };
   return { x: Math.round(camera.x * k) / k, y: Math.round(camera.y * k) / k };
 }
-// Resolución automática: arranca en la nativa (máx. 2) y sólo cambia con histéresis fuerte, en saltos
-// de 0,5, para no redimensionar el canvas en mitad de la partida (cada cambio se veía como un parpadeo).
-const AUTO_LEVELS = [0.75, 1, 1.5, 2];
-export function autoStart(deviceDpr) {
-  const max = Math.min(deviceDpr || 1, 2);
-  return AUTO_LEVELS.filter((l) => l <= max + 1e-6).pop() ?? 0.75;
+// Niveles de resolución del canvas = DPR del dispositivo / n (n entero): así cada píxel del canvas cae
+// en un número ENTERO de píxeles físicos y el compositor no re-muestrea con fase variable (moiré /
+// "estática" al moverse en iPhone DPR 3 con canvas a 2×). Ascendente.
+export function resolutionLevels(deviceDpr) {
+  const d = Math.min(Math.max(deviceDpr || 1, 1), 3);
+  const out = [];
+  for (const n of [4, 3, 2, 1]) if (d / n >= 0.74) out.push(d / n);
+  return out;
 }
-export function autoStep(current, frameAvg, timer, maxDpr, drops = 0) {
-  const levels = AUTO_LEVELS.filter((l) => l <= maxDpr + 1e-6);
-  if (!levels.length) levels.push(0.75);
+export function qualityDpr(quality, deviceDpr, autoScale) {
+  const levels = resolutionLevels(deviceDpr);
+  if (quality === "high") return levels[levels.length - 1];
+  if (quality === "low") return levels.find((l) => l >= 0.85) ?? levels[0];
+  return autoScale;
+}
+// Automática: arranca en el nivel más alto ≤ 2 y sólo baja con histéresis; una baja es definitiva.
+export function autoStart(deviceDpr) {
+  const levels = resolutionLevels(deviceDpr);
+  return levels.filter((l) => l <= 2 + 1e-6).pop() ?? levels[0];
+}
+export function autoStep(current, frameAvg, timer, levels, drops = 0) {
   const i = Math.max(0, levels.findIndex((l) => Math.abs(l - current) < 1e-6));
+  const top = levels.filter((l) => l <= 2 + 1e-6).length - 1;
   // Bajar: 2 s seguidos por debajo de ~48 fps. Subir: 10 s por encima de ~58 fps y sólo si nunca bajó (sin vaivén).
   if (frameAvg > 1 / 48 && timer > 2 && i > 0) return { scale: levels[i - 1], timer: 0 };
-  if (frameAvg < 1 / 58 && timer > 10 && i < levels.length - 1 && drops === 0)
+  if (frameAvg < 1 / 58 && timer > 10 && i < top && drops === 0)
     return { scale: levels[i + 1], timer: 0 };
   if (frameAvg >= 1 / 58 && frameAvg <= 1 / 48) return { scale: current, timer: 0 };
   return { scale: current, timer };
 }
+// Capas de render que se pueden apagar desde ?debug para aislar artefactos en el teléfono.
+export const LAYER_KEYS = [
+  "floor", "grain", "torches", "vignette", "particles", "ambient", "smoothing", "snap",
+];
+export function defaultLayers() {
+  return Object.fromEntries(LAYER_KEYS.map((k) => [k, true]));
+}
 export function createRenderer(canvas) {
-  const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true }),
+  // Sin "desynchronized": en Android Chrome ese modo dibuja sin vsync (desgarros/ruido al moverse).
+  const ctx = canvas.getContext("2d", { alpha: false }),
     sprites = createSpriteCache(),
     art = createArt(),
     heroSprites = new Map();
@@ -149,7 +169,7 @@ export function createRenderer(canvas) {
         c.lineTo(px + 3, py + 3);
         c.lineTo(px + TILE - 4, py + 3);
         c.stroke();
-        for (let i = 0; i < 28; i++) {
+        for (let i = 0; i < (layers.grain ? 28 : 0); i++) {
           c.fillStyle = i % 2 ? "#ffffff06" : "#00000012";
           c.fillRect(
             px + ((n * i + 7) % 44),
@@ -325,6 +345,10 @@ export function createRenderer(canvas) {
     camera = { x: s.player.x, y: s.player.y };
     lastFloor = s.floor;
   }
+  const layers = defaultLayers();
+  layers.res = "auto";
+  let currentDpr = 1,
+    vignetteCache = null;
   let autoScale = autoStart(devicePixelRatio || 1),
     frameAvg = 1 / 60,
     adaptTimer = 0,
@@ -400,15 +424,24 @@ export function createRenderer(canvas) {
       }
     },
     get renderScale() {
-      return autoScale;
+      return currentDpr;
+    },
+    layers,
+    setLayer(key, value) {
+      if (!(key in layers)) return;
+      layers[key] = value;
+      if (key === "grain") dungeon = null; // re-generar los bloques del piso
+      if (key === "vignette") vignetteCache = null;
     },
     render(s, meta, dt) {
       // Resolución dinámica (calidad "auto"): baja la escala interna si los frames tardan > 20 ms y la
       // vuelve a subir si sobra margen. El canvas se estira por CSS, la lógica usa px CSS.
-      const maxDpr = Math.min(devicePixelRatio || 1, 2);
-      if (meta.settings.quality === "auto" && s && dt > 0) {
+      const levels = resolutionLevels(devicePixelRatio || 1);
+      if (!levels.some((l) => Math.abs(l - autoScale) < 1e-6))
+        autoScale = autoStart(devicePixelRatio || 1);
+      if (meta.settings.quality === "auto" && s && dt > 0 && layers.res === "auto") {
         frameAvg += (Math.min(dt, 0.1) - frameAvg) * 0.05;
-        const next = autoStep(autoScale, frameAvg, adaptTimer + dt, maxDpr, autoDrops);
+        const next = autoStep(autoScale, frameAvg, adaptTimer + dt, levels, autoDrops);
         adaptTimer = next.timer;
         if (next.scale !== autoScale) {
           if (next.scale < autoScale) autoDrops++;
@@ -416,11 +449,9 @@ export function createRenderer(canvas) {
         }
       }
       const dpr =
-          meta.settings.quality === "low"
-            ? 1
-            : meta.settings.quality === "auto"
-              ? Math.min(autoScale, maxDpr)
-              : maxDpr,
+          layers.res !== "auto" && Number(layers.res) > 0
+            ? Number(layers.res)
+            : qualityDpr(meta.settings.quality, devicePixelRatio || 1, autoScale),
         { w, h } = viewport();
       if (
         canvas.width !== Math.round(w * dpr) ||
@@ -429,8 +460,9 @@ export function createRenderer(canvas) {
         canvas.width = Math.round(w * dpr);
         canvas.height = Math.round(h * dpr);
       }
+      currentDpr = dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.imageSmoothingEnabled = true; // arte vectorial/suave: filtrado sí, pero sobre posiciones alineadas
+      ctx.imageSmoothingEnabled = layers.smoothing; // se reaplica en cada frame (un resize lo resetea)
       ctx.fillStyle = "#030609";
       ctx.fillRect(0, 0, w, h);
       const reduced = reducedMotion();
@@ -479,7 +511,7 @@ export function createRenderer(canvas) {
         effectDungeon = s.dungeon;
       }
       ambientTime += dt;
-      if (ambientTime > 0.12 && !reduced) {
+      if (ambientTime > 0.12 && !reduced && layers.ambient) {
         ambientTime = 0;
         particles.emit(
           s.player.x + (Math.random() - 0.5) * 850,
@@ -510,11 +542,10 @@ export function createRenderer(canvas) {
           : 0;
       // Cámara alineada a píxeles físicos del canvas: la textura del piso (grano fino, líneas de 1 px)
       // se desplaza siempre un número entero de píxeles → mismo muestreo cada frame, sin "estática".
-      const view = snapCamera(camera, scale, dpr);
-      ctx.translate(
-        Math.round((w / 2 + shake) * dpr) / dpr,
-        Math.round((h / 2) * dpr) / dpr,
-      );
+      const view = layers.snap ? snapCamera(camera, scale, dpr) : { x: camera.x, y: camera.y };
+      const originX = Math.round((w / 2 + shake) * dpr),
+        originY = Math.round((h / 2) * dpr);
+      ctx.translate(originX / dpr, originY / dpr);
       ctx.scale(scale, scale);
       ctx.translate(-view.x, -view.y);
       const vw = w / scale / 2 + 768,
@@ -524,7 +555,7 @@ export function createRenderer(canvas) {
         right = left + w / scale + 16,
         bottom = top + h / scale + 16;
       // Bloques completos (sin recorte fraccionario) y con CHUNK_PAD px de solape: sin costuras entre bloques.
-      for (const chunk of chunks)
+      for (const chunk of layers.floor ? chunks : [])
         if (
           chunk.x < right &&
           chunk.x + CHUNK + CHUNK_PAD > left &&
@@ -532,7 +563,7 @@ export function createRenderer(canvas) {
           chunk.y + CHUNK + CHUNK_PAD > top
         )
           ctx.drawImage(chunk.tile, chunk.x, chunk.y);
-      for (const l of lights) {
+      for (const l of layers.torches ? lights : []) {
         if (
           Math.abs(l.x - view.x) > vw - 600 ||
           Math.abs(l.y - view.y) > vh - 600
@@ -967,7 +998,7 @@ export function createRenderer(canvas) {
         ctx.arc(s.target.x, s.target.y, s.target.radius + 8, 0, Math.PI * 2);
         ctx.stroke();
       }
-      for (const particle of particles.active) {
+      for (const particle of layers.particles ? particles.active : []) {
         ctx.globalAlpha = Math.min(1, particle.life / particle.max);
         if (particle.kind === "arrow") {
           ctx.save();
@@ -992,23 +1023,44 @@ export function createRenderer(canvas) {
       const tint = ["#051c13d0", "#071323df", "#240920dc"][
         Math.floor((s.floor - 1) / 3)
       ];
-      const light = ctx.createRadialGradient(
-        p.x,
-        p.y,
-        80,
-        p.x,
-        p.y,
-        (Math.max(w, h) / scale) * 0.75,
-      );
-      light.addColorStop(0, "#00000000");
-      light.addColorStop(1, tint);
-      ctx.fillStyle = light;
-      ctx.fillRect(
-        view.x - w / scale,
-        view.y - h / scale,
-        (w * 2) / scale,
-        (h * 2) / scale,
-      );
+      // Viñeta: antes un degradado radial nuevo por frame centrado en el jugador (posición fraccionaria).
+      // En GPUs móviles el degradado oscuro se tramea (dithering) y la trama "camina" al moverse: estática.
+      // Ahora se pinta UNA vez en un lienzo chico y se estampa alineado a píxeles físicos.
+      if (layers.vignette) {
+        const radius = (Math.max(w, h) / scale) * 0.75;
+        if (
+          !vignetteCache ||
+          vignetteCache.tint !== tint ||
+          Math.abs(vignetteCache.radius - radius) > 1
+        ) {
+          const size = 256,
+            vc = document.createElement("canvas");
+          vc.width = vc.height = size;
+          const g = vc.getContext("2d"),
+            inner = (80 / radius) * (size / 2),
+            grad = g.createRadialGradient(size / 2, size / 2, inner, size / 2, size / 2, size / 2);
+          grad.addColorStop(0, "#00000000");
+          grad.addColorStop(1, tint);
+          g.fillStyle = grad;
+          g.fillRect(0, 0, size, size);
+          vignetteCache = { canvas: vc, tint, radius };
+        }
+        // En coordenadas de pantalla (píxeles del canvas): centro redondeado, tamaño fijo.
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        const k = scale * dpr,
+          cx = Math.round((p.x - view.x) * k + originX),
+          cy = Math.round((p.y - view.y) * k + originY),
+          r = Math.round(vignetteCache.radius * k);
+        ctx.drawImage(vignetteCache.canvas, cx - r, cy - r, r * 2, r * 2);
+        ctx.fillStyle = tint;
+        // fuera del círculo: color pleno (sin degradado)
+        ctx.fillRect(0, 0, canvas.width, Math.max(0, cy - r));
+        ctx.fillRect(0, cy + r, canvas.width, canvas.height);
+        ctx.fillRect(0, cy - r, Math.max(0, cx - r), r * 2);
+        ctx.fillRect(cx + r, cy - r, canvas.width, r * 2);
+        ctx.imageSmoothingEnabled = layers.smoothing;
+      }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       if (flashTime > 0 && !reduced) {
         ctx.fillStyle = `rgba(255,235,190,${flashTime * 0.8})`;

@@ -29,7 +29,7 @@ import {
 } from "./monetization.js";
 import { platform, configureDemo } from "./platform.js";
 import { createControls } from "./input.js";
-import { createRenderer } from "./renderer.js";
+import { createRenderer, LAYER_KEYS, resolutionLevels } from "./renderer.js";
 import { createSound } from "./sound.js";
 import { createInterpolation } from "./interpolation.js";
 installViewport();
@@ -65,7 +65,8 @@ let meta = store.load(),
   victoryAt = 0,
   cancelModal = null,
   versionTaps = 0,
-  debugVisible = new URLSearchParams(location.search).has("debug");
+  debugVisible = new URLSearchParams(location.search).has("debug"),
+  layersVisible = /[?&](debug|capas)\b/.test(location.search);
 const renderer = createRenderer($("game")),
   audio = createSound(window, meta.settings),
   interpolation = createInterpolation();
@@ -224,7 +225,7 @@ function show(name) {
 function lobby() {
   const vip = vipActive(meta, Date.now());
   if (meta.selectedSkin === "stellar" && !vip) meta.selectedSkin = "classic";
-  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">◈ ${meta.almas} almas &nbsp; ✧ ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario${meta.completedOnce ? ' <span class="completion-crest" title="Venciste al Abismo">♜</span>' : ""}</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? " · ✧ Pase del Paladín" : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.1.1 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
+  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">◈ ${meta.almas} almas &nbsp; ✧ ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario${meta.completedOnce ? ' <span class="completion-crest" title="Venciste al Abismo">♜</span>' : ""}</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? " · ✧ Pase del Paladín" : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.1.2 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
   const m = $("menu");
   if (meta.checkpoint)
     addButton(m, "Continuar partida", () => start(true), "primary");
@@ -629,7 +630,7 @@ function settings() {
     toast("Vas a ver el tutorial al jugar");
   });
   const note = document.createElement("p");
-  note.textContent = "Español rioplatense · v2.1.1";
+  note.textContent = "Español rioplatense · v2.1.2";
   c.append(note);
   addButton(c, "Borrar progreso", async () => {
     if (
@@ -1259,6 +1260,85 @@ function jumpToFloor(f) {
   }
   return true;
 }
+// Panel "Capas" (?debug o ?capas): apaga capas de render para aislar artefactos en el teléfono.
+// Se guarda en localStorage, así sobrevive a recargas.
+const LAYER_LABELS = {
+  floor: "Piso",
+  grain: "Grano del piso",
+  torches: "Antorchas (luces)",
+  vignette: "Viñeta / iluminación",
+  particles: "Partículas",
+  ambient: "Partículas ambientales",
+  smoothing: "Suavizado de imagen",
+  snap: "Cámara alineada a píxeles",
+};
+function setupLayersPanel() {
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem("paladin:layers") || "{}") || {};
+  } catch {}
+  for (const k of LAYER_KEYS)
+    if (typeof saved[k] === "boolean") renderer.setLayer(k, saved[k]);
+  if (
+    typeof saved.res === "string" &&
+    (saved.res === "auto" ||
+      resolutionLevels(devicePixelRatio || 1).some((v) => String(v) === saved.res))
+  )
+    renderer.setLayer("res", saved.res);
+  if (!layersVisible) return;
+  const save = () => {
+    try {
+      localStorage.setItem("paladin:layers", JSON.stringify(renderer.layers));
+    } catch {}
+  };
+  const box = document.createElement("details");
+  box.id = "layers";
+  box.className = "scroll";
+  box.innerHTML = `<summary>Capas</summary><div class="rows"></div><small id="layers-info"></small>`;
+  const rows = box.querySelector(".rows");
+  for (const k of LAYER_KEYS) {
+    const l = document.createElement("label"),
+      i = document.createElement("input");
+    i.type = "checkbox";
+    i.checked = renderer.layers[k];
+    i.onchange = () => {
+      renderer.setLayer(k, i.checked);
+      save();
+    };
+    l.append(i, " " + LAYER_LABELS[k]);
+    rows.append(l);
+  }
+  const l = document.createElement("label"),
+    sel = document.createElement("select");
+  sel.add(new Option("Resolución: según Calidad", "auto"));
+  for (const v of resolutionLevels(devicePixelRatio || 1).reverse())
+    sel.add(new Option(`Resolución: ${+v.toFixed(3)}×`, String(v)));
+  sel.value = renderer.layers.res;
+  if (sel.value !== renderer.layers.res) sel.value = "auto";
+  sel.onchange = () => {
+    renderer.setLayer("res", sel.value);
+    save();
+  };
+  l.append(sel);
+  rows.append(l);
+  const reset = document.createElement("button");
+  reset.textContent = "Todo encendido";
+  reset.onclick = () => {
+    for (const k of LAYER_KEYS) renderer.setLayer(k, true);
+    renderer.setLayer("res", "auto");
+    save();
+    for (const [n, i] of [...rows.querySelectorAll("input")].entries())
+      i.checked = renderer.layers[LAYER_KEYS[n]];
+    sel.value = "auto";
+  };
+  rows.append(reset);
+  document.body.append(box);
+  setInterval(() => {
+    const cv = $("game");
+    $("layers-info").textContent = `canvas ${cv.width}×${cv.height} · css ${cv.clientWidth}×${cv.clientHeight} · DPR ${devicePixelRatio} · ${Math.round(fps)} fps`;
+  }, 500);
+}
+setupLayersPanel();
 window.__paladin = {
   get state() {
     return state;

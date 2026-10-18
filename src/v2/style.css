@@ -1274,3 +1274,52 @@ canvas.title-crest {
     padding: 5px 8px;
   }
 }
+/* Panel de capas (?debug / ?capas) */
+#layers {
+  position: fixed;
+  top: calc(6px + var(--top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  background: #0b1015e8;
+  border: 1px solid #c9aa63;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  max-height: calc(var(--app-h, 100dvh) - 12px);
+  overflow: auto;
+  pointer-events: auto;
+  touch-action: pan-y;
+}
+#layers summary {
+  cursor: pointer;
+  color: var(--gold);
+  min-height: 28px;
+  line-height: 28px;
+}
+#layers .rows {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 14px;
+  padding: 4px 0;
+}
+#layers label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+}
+#layers input {
+  width: 20px;
+  height: 20px;
+}
+#layers select,
+#layers button {
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+#layers small {
+  display: block;
+  color: #9eae9b;
+}
