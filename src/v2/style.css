@@ -862,3 +862,16 @@ body {
     font-size: 13px;
   }
 }
+/* v2.1 · nada decorativo puede tragarse los toques del joystick */
+#transition,
+#toast,
+#joystick-hint,
+#joystick,
+#hud,
+#bossbar {
+  pointer-events: none;
+}
+#hud button,
+#hud canvas {
+  pointer-events: auto;
+}

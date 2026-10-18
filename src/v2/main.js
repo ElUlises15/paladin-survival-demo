@@ -1,4 +1,5 @@
-import { installViewport, viewport } from "./viewport.js";
+import { installViewport, viewport, measure } from "./viewport.js";
+import { createErrorLog, createLoopGuard } from "./watchdog.js";
 import {
   HEROES,
   WEAPONS,
@@ -39,6 +40,10 @@ try {
   storage = localStorage;
 } catch {}
 const store = createSaveStore(storage);
+const errlog = createErrorLog(storage);
+window.__paladinErrors = () => errlog.list();
+window.addEventListener("error", (e) => errlog.record("window", e.error || e.message));
+window.addEventListener("unhandledrejection", (e) => errlog.record("promise", e.reason));
 let meta = store.load(),
   state = null,
   page = "lobby",
@@ -50,6 +55,8 @@ let meta = store.load(),
   flowRewarded = false,
   result = null,
   busy = false,
+  busySince = 0,
+  loopErrors = 0,
   cancelModal = null,
   versionTaps = 0,
   debugVisible = new URLSearchParams(location.search).has("debug");
@@ -577,6 +584,8 @@ function results() {
     async () => {
       if (busy) return;
       busy = true;
+      busySince = Date.now();
+      try {
       if (
         shouldShowInterstitial(meta, Date.now(), {
           victory: result.victory,
@@ -589,7 +598,11 @@ function results() {
           persist();
         }
       }
-      busy = false;
+      } catch (e) {
+        errlog.record("interstitial", e);
+      } finally {
+        busy = false;
+      }
       state = null;
       result = null;
       show("lobby");
@@ -601,8 +614,16 @@ function results() {
 async function rewarded(kind) {
   if (busy) return false;
   busy = true;
-  const r = await platform.ads.showRewarded(kind);
-  busy = false;
+  busySince = Date.now();
+  let r;
+  try {
+    r = await platform.ads.showRewarded(kind);
+  } catch (e) {
+    errlog.record("rewarded", e);
+    r = { rewarded: false };
+  } finally {
+    busy = false;
+  }
   if (!r.rewarded) {
     toast("Anuncio no disponible, probá más tarde");
     return false;
@@ -686,6 +707,18 @@ configureDemo({
 async function purchase(id) {
   if (busy) return;
   busy = true;
+  busySince = Date.now();
+  try {
+    await purchaseFlow(id);
+  } catch (e) {
+    errlog.record("purchase", e);
+    toast("Compra no disponible, probá más tarde");
+  } finally {
+    busy = false;
+  }
+  if (page === "shop") show("shop");
+}
+async function purchaseFlow(id) {
   const r = await platform.billing.purchase(id);
   if (r.ok && r.transactionId) {
     let expiry;
@@ -710,8 +743,6 @@ async function purchase(id) {
       await platform.billing.finish(r.transactionId, id);
     else toast("No pudimos verificar la compra. Probá restaurarla.");
   } else if (!r.cancelled) toast("Compra no disponible, probá más tarde");
-  busy = false;
-  if (page === "shop") show("shop");
 }
 async function restore(notify = false) {
   const r = await platform.billing.restore();
@@ -738,6 +769,7 @@ platform.app.onPause(() => {
   persist();
 });
 platform.app.onResume(() => {
+  resetInput("resume");
   recordSession(meta, Date.now());
   persist();
 });
@@ -768,7 +800,18 @@ platform.app.onBack(() => {
     });
   } else pause();
 });
+function resetInput(why) {
+  controls.clear();
+  last = performance.now();
+  acc = 0;
+  measure();
+  loop?.check(true);
+}
+window.addEventListener("focus", () => resetInput("focus"));
+window.addEventListener("paladin-native-revive", () => resetInput("native"));
+window.addEventListener("pageshow", () => resetInput("pageshow"));
 document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) resetInput("visible");
   if (document.hidden) {
     if (page === "game") pause();
     persist();
@@ -987,6 +1030,14 @@ window.__paladin = {
   get meta() {
     return meta;
   },
+  get page() {
+    return page;
+  },
+  get loopRestarts() {
+    return loop.restarts;
+  },
+  renderer,
+  errors: () => errlog.list(),
   jumpToFloor,
   grant(almas = 1000, gemas = 1000) {
     meta.almas += Math.max(0, Number(almas) || 0);
@@ -1005,36 +1056,101 @@ function frame(now) {
     lastPersist = now;
     persist();
   }
-  const dt = Math.min(0.1, (now - last) / 1000 || 0);
+  const dt = Math.min(0.1, Math.max(0, (now - last) / 1000) || 0);
   last = now;
   fps += ((dt ? 1 / dt : 60) - fps) * 0.05;
   acc += dt;
-  if (page === "game" && !document.hidden && !(viewport().h > viewport().w)) {
-    while (acc >= 1 / 60 && page === "game") {
-      updateRun(state, 1 / 60, controls.read());
-      events();
-      acc -= 1 / 60;
-      if (state.mode === "dead") show("death");
-      else if (state.mode === "victory") finish(true);
-    }
-    if (page === "game" && now - hudTime > 66) {
-      hudTime = now;
-      updateHud();
+  const vp = viewport();
+  if (page === "game" && state && !document.hidden && !(vp.h > vp.w * 1.05)) {
+    try {
+      let steps = 0;
+      while (acc >= 1 / 60 && page === "game" && steps++ < 8) {
+        updateRun(state, 1 / 60, controls.read());
+        events();
+        acc -= 1 / 60;
+        if (state.mode === "dead") show("death");
+        else if (state.mode === "victory") finish(true);
+      }
+      if (steps >= 8) acc = 0; // nunca acumular atraso (espiral de la muerte)
+      if (page === "game" && now - hudTime > 66) {
+        hudTime = now;
+        updateHud();
+      }
+      loopErrors = 0;
+    } catch (e) {
+      acc = 0;
+      loopErrors++;
+      errlog.record("update", e);
+      if (loopErrors === 90) {
+        // Error persistente: guardar y pausar en vez de quedar congelado.
+        try {
+          persist();
+          state.mode = "paused";
+          show("pause");
+          toast("Algo falló. Tu partida está guardada; tocá Reanudar.");
+        } catch {}
+      }
     }
   } else acc = 0;
-  renderer.render(state, meta, dt);
+  try {
+    renderer.render(state, meta, dt);
+  } catch (e) {
+    errlog.record("render", e);
+  }
   if (debugVisible && $("fps")) $("fps").textContent = Math.round(fps);
-  requestAnimationFrame(frame);
 }
+// Guardián cada 1 s: bucle vivo, overlays coherentes con la pantalla, busy que no se traba.
+function watchdog() {
+  try {
+    if (!document.hidden && loop.check(true)) errlog.record("watchdog", "loop restarted");
+    measure();
+    const now = Date.now();
+    if (busy && busySince && now - busySince > 240000) {
+      errlog.record("watchdog", "busy reset");
+      busy = false;
+    }
+    if (page === "game") {
+      if (screen.childNodes.length) {
+        errlog.record("watchdog", "screen overlay over game");
+        screen.innerHTML = "";
+      }
+      if (!modal.hidden && !cancelModal && !busy) {
+        errlog.record("watchdog", "orphan modal");
+        modal.hidden = true;
+      }
+      if (state && state.mode === "paused" && modal.hidden) {
+        errlog.record("watchdog", "paused while in game");
+        state.mode = "playing";
+      }
+      if ($("controls").hidden || !document.body.classList.contains("playing")) {
+        errlog.record("watchdog", "controls hidden in game");
+        $("controls").hidden = false;
+        $("hud").hidden = false;
+        document.body.classList.add("playing");
+      }
+    }
+  } catch (e) {
+    errlog.record("watchdog", e);
+  }
+}
+window.__paladinWatchdog = watchdog;
 window.addEventListener("pointerdown", () => audio.unlock(), { once: true });
 show("lobby");
-requestAnimationFrame(frame);
-Promise.all([platform.ads.init(), platform.billing.init()]).then(async () => {
-  await restore();
-  prices = await platform.billing.getProducts();
-  platform.ads.preload();
-  if (page === "lobby") show("lobby");
-});
+const loop = createLoopGuard((cb) => requestAnimationFrame(cb), frame);
+loop.start();
+setInterval(watchdog, 1000);
+// La inicialización de anuncios/consentimiento/compras nunca bloquea el juego: corre aparte.
+Promise.all([
+  Promise.resolve().then(() => platform.ads.init()).catch((e) => errlog.record("ads.init", e)),
+  Promise.resolve().then(() => platform.billing.init()).catch((e) => errlog.record("billing.init", e)),
+])
+  .then(async () => {
+    await restore();
+    prices = (await platform.billing.getProducts()) || prices;
+    platform.ads.preload();
+    if (page === "lobby" && modal.hidden) show("lobby");
+  })
+  .catch((e) => errlog.record("init", e));
 if ("serviceWorker" in navigator && !window.Capacitor) {
   window.addEventListener("load", () =>
     navigator.serviceWorker

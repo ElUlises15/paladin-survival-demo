@@ -9,6 +9,7 @@ export function createControls(canvas, buttons, onPause) {
     origin = { x: 0, y: 0 },
     mx = 0,
     my = 0;
+  const stats = { takeovers: 0 };
   const actions = {
     KeyK: "dash",
     ShiftLeft: "dash",
@@ -51,14 +52,25 @@ export function createControls(canvas, buttons, onPause) {
   window.addEventListener("blur", clear);
   document.addEventListener("visibilitychange", clear);
   canvas.addEventListener("pointerdown", (e) => {
-    if (e.clientX > viewport().w * 0.45 || pointer !== null) return;
+    if (e.clientX > viewport().w * 0.45) return;
+    // Si ya había un dedo "activo" y llega otro a la zona del joystick, el anterior se perdió
+    // (pointerup tragado por un diálogo nativo, gesto del sistema, etc.): tomar el control.
+    if (pointer !== null && pointer !== e.pointerId) {
+      try {
+        if (canvas.hasPointerCapture?.(pointer)) canvas.releasePointerCapture(pointer);
+      } catch {}
+      stats.takeovers++;
+    }
     pointer = e.pointerId;
+    mx = my = 0;
     origin = { x: e.clientX, y: e.clientY };
     joy.hidden = false;
     joy.style.left = `${origin.x}px`;
     joy.style.top = `${origin.y}px`;
     knob.style.transform = "translate(0,0)";
-    canvas.setPointerCapture(e.pointerId);
+    try {
+      canvas.setPointerCapture(e.pointerId);
+    } catch {}
   });
   canvas.addEventListener("pointermove", (e) => {
     if (e.pointerId !== pointer) return;
@@ -84,7 +96,9 @@ export function createControls(canvas, buttons, onPause) {
   for (const [action, b] of Object.entries(buttons)) {
     b.addEventListener("pointerdown", (e) => {
       e.preventDefault();
-      b.setPointerCapture(e.pointerId);
+      try {
+        b.setPointerCapture(e.pointerId);
+      } catch {}
       if (action === "attack") {
         if (b.dataset.interact === "true") pending.interact = true;
         else {
@@ -96,8 +110,20 @@ export function createControls(canvas, buttons, onPause) {
     for (const event of ["pointerup", "pointercancel", "lostpointercapture"])
       b.addEventListener(event, (e) => held.delete(e.pointerId));
   }
+  // Botón de ataque: si el pointerup se perdió, soltarlo al tocar en cualquier otro lado sin ese dedo.
+  window.addEventListener(
+    "pointerup",
+    (e) => {
+      if (held.has(e.pointerId)) held.delete(e.pointerId);
+    },
+    true,
+  );
   return {
     clear,
+    stats,
+    get pointer() {
+      return pointer;
+    },
     read() {
       const i = {
         moveX:
