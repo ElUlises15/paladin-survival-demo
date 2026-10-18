@@ -16,7 +16,22 @@
       <div class="vitals">
         <strong id="floor"></strong>
         <div id="hp"></div>
-        <meter id="hpbar" min="0" max="100" value="100"></meter>
+        <div class="hp-track">
+          <meter
+            id="hpghost"
+            min="0"
+            max="100"
+            value="100"
+            aria-hidden="true"
+          ></meter
+          ><meter
+            id="hpbar"
+            min="0"
+            max="100"
+            value="100"
+            aria-label="Vida"
+          ></meter>
+        </div>
         <div id="armor"></div>
         <meter id="armorbar" min="0" max="20" value="20"></meter
         ><span id="gold"></span>

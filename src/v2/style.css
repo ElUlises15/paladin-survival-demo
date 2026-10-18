@@ -885,3 +885,392 @@ input {
 #controls button {
   touch-action: none;
 }
+
+/* v2.1: compact sanctuary screens and presentation-only feedback. */
+button:active,
+a.button:active {
+  transform: scale(0.94);
+}
+button,
+a.button {
+  transition:
+    transform 0.1s,
+    border-color 0.15s,
+    filter 0.15s;
+}
+#toast:not([hidden]) {
+  animation: toast-in 0.25s ease-out;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    translate: 0 12px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+#transition:not([hidden]) {
+  animation: floor-fade 1.8s both;
+}
+@keyframes floor-fade {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  20%,
+  75% {
+    opacity: 1;
+  }
+}
+.hp-track {
+  position: relative;
+  height: 14px;
+}
+.hp-track meter {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+}
+#hpghost::-webkit-meter-optimum-value {
+  background: #f5ca77;
+}
+#hpbar {
+  background: transparent;
+}
+#hpbar::-webkit-meter-bar {
+  background: transparent;
+}
+.title-card {
+  margin: auto;
+  text-align: center;
+  width: min(650px, 100%);
+}
+.title-crest {
+  font: 100px Georgia;
+  color: #f4d58c;
+  text-shadow: 0 0 40px #c7a65c88;
+  animation: crest-breathe 3s ease-in-out infinite;
+}
+@keyframes crest-breathe {
+  50% {
+    opacity: 0.7;
+    transform: translateY(-5px);
+  }
+}
+.completion-crest {
+  color: #ffe6a3;
+  font-size: 0.6em;
+}
+.hero-portrait {
+  float: right;
+  width: 100px;
+  height: 80px;
+}
+.hero-stat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.hero-stat meter {
+  width: 55%;
+}
+.credits-window {
+  flex: 1;
+  min-height: 80px;
+  overflow: auto;
+  text-align: center;
+}
+.credits-roll {
+  animation: credits-roll 24s linear both;
+}
+@keyframes credits-roll {
+  from {
+    transform: translateY(100px);
+  }
+  to {
+    transform: translateY(-30px);
+  }
+}
+.settings input[type="range"] {
+  width: 135px;
+  accent-color: #e9cb85;
+}
+#screen[data-page="pause"] > .card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+#screen[data-page="pause"] > .card h3,
+#screen[data-page="pause"] > .card p {
+  flex-basis: 100%;
+}
+@media (max-height: 450px) {
+  #screen {
+    padding: calc(8px + var(--top)) calc(16px + var(--right))
+      calc(8px + var(--bottom)) calc(16px + var(--left));
+    gap: 5px;
+  }
+  h1 {
+    font-size: 34px;
+    margin: 3px 0;
+  }
+  h2 {
+    font-size: 23px;
+    margin: 2px 0;
+  }
+  .header {
+    padding-bottom: 4px;
+    gap: 8px;
+  }
+  .currency {
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+  .hero-art {
+    display: none;
+  }
+  .lobby {
+    grid-template-columns: 0.8fr 1.5fr;
+    gap: 18px;
+  }
+  .lobby p {
+    font-size: 12px;
+    margin: 5px 0;
+  }
+  .menu {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .menu .primary {
+    grid-column: auto;
+  }
+  button,
+  a.button {
+    min-height: 38px;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+  .footer {
+    margin-top: 3px;
+    font-size: 10px;
+  }
+  .cards {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+    margin: 4px 0;
+  }
+  .card {
+    padding: 10px;
+  }
+  .card h3 {
+    font-size: 17px;
+    margin: 0 0 5px;
+  }
+  .card p,
+  #screen > p {
+    font-size: 11px;
+    line-height: 1.35;
+    margin: 4px 0 6px;
+  }
+  .hero-portrait {
+    width: 50px;
+    height: 40px;
+  }
+  .hero-stat {
+    font-size: 10px;
+  }
+  .settings {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px 14px;
+  }
+  .settings h3 {
+    grid-column: 1/-1;
+  }
+  .settings label {
+    margin: 0;
+    font-size: 11px;
+    gap: 6px;
+  }
+  .settings input[type="range"] {
+    width: 90px;
+  }
+  #screen[data-page="death"] > .card,
+  #screen[data-page="results"] > .card {
+    padding: 14px;
+  }
+  #screen[data-page="death"] > .card h3,
+  #screen[data-page="results"] > .card h3 {
+    font-size: 22px;
+  }
+  .title-crest {
+    font-size: 65px;
+  }
+  .product .gem-art {
+    display: none;
+  }
+  .product-tag {
+    position: static;
+    padding: 2px 5px;
+    font-size: 9px;
+  }
+}
+@media (max-height: 360px) {
+  .menu {
+    gap: 4px;
+  }
+  .menu button,
+  .menu a {
+    min-height: 34px;
+    padding: 6px;
+    font-size: 11px;
+  }
+  .eyebrow {
+    font-size: 9px;
+  }
+  .settings {
+    gap: 5px 9px;
+  }
+  .cards {
+    gap: 5px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+.screen-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0;
+}
+.screen-tabs button {
+  flex: 1;
+}
+@media (max-height: 450px) {
+  .screen-tabs {
+    gap: 6px;
+    margin: 0;
+  }
+  .screen-tabs button {
+    min-height: 30px;
+    padding: 4px 10px;
+  }
+  .settings label {
+    min-height: 30px;
+  }
+  .settings select {
+    min-height: 32px;
+    padding: 4px;
+  }
+  #screen[data-page="heroes"] .cards {
+    margin: 0;
+  }
+}
+@media (max-height: 450px) {
+  #screen[data-page="shop"] .cards:has(> :nth-child(4)) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  #screen[data-page="shop"] .product {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 3px 8px;
+    align-items: center;
+  }
+  #screen[data-page="shop"] .product h3 {
+    margin: 0;
+  }
+  #screen[data-page="shop"] .product p {
+    margin: 0;
+  }
+  #screen[data-page="shop"] .product button {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+  }
+  #screen[data-page="shop"] .product-tag {
+    display: none;
+  }
+}
+canvas.title-crest {
+  width: 160px;
+  height: 160px;
+}
+@media (max-height: 450px) {
+  canvas.title-crest {
+    width: 90px;
+    height: 90px;
+  }
+}
+
+@media (min-height: 451px) {
+  .settings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 28px;
+  }
+  .settings h3 {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-height: 360px) {
+  #screen .header button {
+    min-height: 32px;
+    padding: 4px 10px;
+  }
+  #screen[data-page="shop"] .product {
+    padding: 6px 8px;
+    gap: 1px 6px;
+  }
+  #screen[data-page="shop"] .product button {
+    min-height: 32px;
+    padding: 5px 8px;
+  }
+  #screen[data-page="shop"] .cards {
+    margin: 0;
+    gap: 4px;
+  }
+  #screen[data-page="shop"] > p {
+    font-size: 10px;
+    margin: 2px 0;
+  }
+  #screen[data-page="shop"] > button {
+    min-height: 30px;
+    padding: 4px 8px;
+  }
+  #screen[data-page="heroes"] .card {
+    padding: 7px;
+  }
+  #screen[data-page="heroes"] .card p {
+    font-size: 10px;
+    line-height: 1.2;
+    margin: 3px 0;
+  }
+  #screen[data-page="talents"] .card {
+    padding: 8px;
+  }
+}
+@media (max-height: 450px) {
+  #screen[data-page="shop"] .cards:has(> :only-child) {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-height: 360px) {
+  #screen[data-page="heroes"] .cards:has(> :nth-child(4)) .card {
+    padding: 5px 7px;
+  }
+  #screen[data-page="heroes"] .cards:has(> :nth-child(4)) h3 {
+    font-size: 15px;
+    margin-bottom: 3px;
+  }
+  #screen[data-page="heroes"] .cards:has(> :nth-child(4)) button {
+    min-height: 32px;
+    padding: 5px 8px;
+  }
+}

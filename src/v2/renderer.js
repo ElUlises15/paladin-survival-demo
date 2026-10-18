@@ -1,3 +1,4 @@
+import { createParticles } from "./effects.js";
 import { viewport, cameraScale } from "./viewport.js";
 import { createArt } from "./art.js";
 import { TILE, SIZE } from "./dungeon.js";
@@ -15,6 +16,14 @@ export function createRenderer(canvas) {
   let clock = 0,
     previousX = 0,
     previousY = 0;
+  const particles = createParticles();
+  let shakeTime = 0,
+    bossSlow = 0,
+    flashTime = 0,
+    ambientTime = 0,
+    effectDungeon = null;
+  const reducedMotion = () =>
+    globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
   const lights = [],
     chunks = [];
   sprites.warm();
@@ -287,8 +296,79 @@ export function createRenderer(canvas) {
     camera = { x: s.player.x, y: s.player.y };
     lastFloor = s.floor;
   }
-  let autoScale = Math.min(devicePixelRatio || 1, 1.5), frameAvg = 1 / 60, adaptTimer = 0;
+  let autoScale = Math.min(devicePixelRatio || 1, 1.5),
+    frameAvg = 1 / 60,
+    adaptTimer = 0;
   return {
+    crest(canvas) {
+      canvas
+        .getContext("2d")
+        .drawImage(art.crest(), 0, 0, canvas.width, canvas.height);
+    },
+    portrait(canvas, hero, skin) {
+      const c = canvas.getContext("2d");
+      c.clearRect(0, 0, canvas.width, canvas.height);
+      c.save();
+      c.translate(canvas.width / 2, canvas.height / 2);
+      c.rotate(-Math.PI / 2);
+      c.drawImage(heroSprite(hero, skin), -35, -35, 70, 70);
+      c.restore();
+    },
+    resetEffects() {
+      particles.clear();
+      shakeTime = bossSlow = flashTime = 0;
+      effectDungeon = null;
+    },
+    event(e, s, meta) {
+      if (effectDungeon !== s.dungeon) {
+        particles.clear();
+        effectDungeon = s.dungeon;
+      }
+      particles.setLimit(
+        meta.settings.quality === "low" ||
+          (meta.settings.quality === "auto" && autoScale <= 1)
+          ? 80
+          : 240,
+      );
+      const x = e.x ?? s.player.x,
+        y = e.y ?? s.player.y;
+      if (e.type === "hit") {
+        particles.emit(x, y, "#fff1b0", 9, 130, 0.23);
+        if (e.heavy) shakeTime = 0.18;
+      }
+      if (e.type === "dash")
+        particles.emit(x, y, "#b9baaa", 15, 90, 0.4, "dust");
+      if (e.type === "pickup" || e.type === "heal")
+        particles.emit(
+          x,
+          y,
+          e.type === "heal" ? "#99efb1" : "#ffdc7c",
+          12,
+          70,
+          0.55,
+        );
+      if (e.type === "kill" || e.type === "bossKill")
+        particles.emit(
+          x,
+          y,
+          "#a9d5da",
+          e.type === "bossKill" ? 85 : 20,
+          190,
+          1,
+        );
+      if (e.type === "bossKill") {
+        shakeTime = 0.6;
+        flashTime = 0.35;
+        bossSlow = 0.6;
+        particles.emit(x, y, "#ffdb7c", 45, 260, 1.4);
+      }
+      if (e.type === "slam" || e.type === "damage") shakeTime = 0.25;
+      if (e.type === "arrowWall") {
+        particles.emit(x, y, "#d4ba8c", 1, 0, 1.8, "arrow");
+        const arrow = particles.active[particles.active.length - 1];
+        if (arrow?.kind === "arrow") arrow.angle = e.angle;
+      }
+    },
     get renderScale() {
       return autoScale;
     },
@@ -300,8 +380,10 @@ export function createRenderer(canvas) {
         frameAvg += (dt - frameAvg) * 0.05;
         adaptTimer += dt;
         if (adaptTimer > 1.5) {
-          if (frameAvg > 1 / 50 && autoScale > 0.75) autoScale = Math.max(0.75, autoScale - 0.25);
-          else if (frameAvg < 1 / 58 && autoScale < maxDpr) autoScale = Math.min(maxDpr, autoScale + 0.125);
+          if (frameAvg > 1 / 50 && autoScale > 0.75)
+            autoScale = Math.max(0.75, autoScale - 0.25);
+          else if (frameAvg < 1 / 58 && autoScale < maxDpr)
+            autoScale = Math.min(maxDpr, autoScale + 0.125);
           adaptTimer = 0;
         }
       }
@@ -322,7 +404,19 @@ export function createRenderer(canvas) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = "#030609";
       ctx.fillRect(0, 0, w, h);
-      clock += dt;
+      const reduced = reducedMotion();
+      const visualDt = dt * (bossSlow > 0 ? 0.2 : 1);
+      clock += visualDt;
+      bossSlow = Math.max(0, bossSlow - dt);
+      shakeTime = Math.max(0, shakeTime - dt);
+      flashTime = Math.max(0, flashTime - dt);
+      particles.setLimit(
+        meta.settings.quality === "low" ||
+          (meta.settings.quality === "auto" && autoScale <= 1)
+          ? 80
+          : 240,
+      );
+      particles.update(visualDt);
       if (!s) {
         for (let i = 0; i < 36; i++) {
           const x = (i * 197 + Math.sin(clock * 0.3 + i) * 35) % w,
@@ -350,19 +444,40 @@ export function createRenderer(canvas) {
         }
         return;
       }
-      if (s.dungeon !== dungeon || lastFloor !== s.floor) build(s);
+      if (s.dungeon !== dungeon || lastFloor !== s.floor) {
+        build(s);
+        particles.clear();
+        effectDungeon = s.dungeon;
+      }
+      ambientTime += dt;
+      if (ambientTime > 0.12 && !reduced) {
+        ambientTime = 0;
+        particles.emit(
+          s.player.x + (Math.random() - 0.5) * 850,
+          s.player.y + (Math.random() - 0.5) * 650,
+          themes[Math.floor((s.floor - 1) / 3)][2],
+          2,
+          15,
+          3,
+          s.floor < 4 ? "mote" : s.floor < 7 ? "snow" : "ember",
+        );
+        for (const particle of particles.active.slice(-2)) {
+          if (particle.kind === "snow") particle.vy = 18;
+          if (particle.kind === "ember") particle.vy = -30;
+        }
+      }
       const scale = cameraScale(w, h);
       camera.x +=
-        (s.player.x + Math.cos(s.player.facing) * 32 - camera.x) *
+        ((s.cameraTarget?.x ?? s.player.x + Math.cos(s.player.facing) * 32) -
+          camera.x) *
         Math.min(1, dt * 9);
       camera.y +=
-        (s.player.y + Math.sin(s.player.facing) * 22 - camera.y) *
+        ((s.cameraTarget?.y ?? s.player.y + Math.sin(s.player.facing) * 22) -
+          camera.y) *
         Math.min(1, dt * 9);
       const shake =
-        meta.settings.shake !== false &&
-        (s.time - s.player.lastDamage < 0.18 ||
-          s.effects.some((f) => f.kind === "meteor" && f.fired))
-          ? Math.sin(s.time * 100) * 3
+        !reduced && meta.settings.shake !== false && shakeTime > 0
+          ? Math.sin(clock * 110) * 8 * Math.min(1, shakeTime * 5)
           : 0;
       ctx.translate(w / 2 + shake, h / 2);
       ctx.scale(scale, scale);
@@ -528,7 +643,7 @@ export function createRenderer(canvas) {
             f.x,
             f.y - (1 - f.t) * 38,
             f.crit ? "#ffd66e" : "#fff2cf",
-            f.crit ? 23 : 17,
+            (f.crit ? 23 : 17) * (1 + Math.max(0, f.t - 0.6) * 1.8),
           );
         } else if (f.kind === "soul") {
           const t = 1 - f.t;
@@ -652,7 +767,7 @@ export function createRenderer(canvas) {
           e.type === 1 || e.boss ? "brute" : e.type === 2 ? "stalker" : "minor";
         if (e.boss) {
           ctx.rotate(-(e.facing || 0));
-          const sprite = art.boss(
+          const sprite = (e.stun > 0.07 ? art.bossFlash : art.boss)(
             Math.floor((s.floor - 1) / 3),
             e.hp < e.maxHp * 0.5,
           );
@@ -664,7 +779,7 @@ export function createRenderer(canvas) {
           const sprite = sprites.enemy(
             type,
             Math.floor((s.floor - 1) / 3),
-            e.stun > 0 ? "flash" : "normal",
+            e.stun > 0.07 ? "flash" : "normal",
           );
           ctx.drawImage(
             sprite,
@@ -688,6 +803,29 @@ export function createRenderer(canvas) {
         ctx.fillRect(e.x - 22, e.y - e.radius - 14, (44 * e.hp) / e.maxHp, 4);
       }
       for (const b of s.bullets) {
+        if (!b.enemy) {
+          const a = Math.atan2(b.vy, b.vx);
+          ctx.save();
+          ctx.translate(b.x, b.y);
+          ctx.rotate(a);
+          const trail = ctx.createLinearGradient(-42, 0, 7, 0);
+          trail.addColorStop(0, "#d7f3ff00");
+          trail.addColorStop(1, "#d7f3ff");
+          ctx.strokeStyle = trail;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(-42, 0);
+          ctx.lineTo(10, 0);
+          ctx.stroke();
+          ctx.fillStyle = "#fff2cc";
+          ctx.beginPath();
+          ctx.moveTo(12, 0);
+          ctx.lineTo(4, -3);
+          ctx.lineTo(4, 3);
+          ctx.fill();
+          ctx.restore();
+          continue;
+        }
         ctx.drawImage(
           sprites.glowDot(b.enemy ? "#ff7b48" : "#8ee9ff"),
           b.x - 18,
@@ -710,17 +848,56 @@ export function createRenderer(canvas) {
       const sprite = heroSprite(
         s.hero,
         meta.selectedSkin,
-        s.time - p.lastDamage < 0.16,
+        s.time - p.lastDamage < 0.08,
       );
       ctx.drawImage(sprite, -30, -30, 60, 60);
       const weapon = weaponData(p.weapons[s.activeSlot]);
       ctx.save();
       ctx.translate(23, 19);
-      ctx.rotate(Math.PI / 4);
+      const charge = weapon.projectile
+        ? Math.max(0, 1 - p.attackCd / (weapon.cooldown || 0.6))
+        : 0;
+      ctx.rotate(
+        Math.PI / 4 +
+          (weapon.projectile
+            ? 0
+            : p.swing > 0
+              ? -1.1 + (1 - p.swing / 0.16) * 2.2
+              : -0.2 - Math.max(0, 0.08 - p.attackCd) * 2),
+      );
+      if (weapon.projectile) {
+        ctx.strokeStyle = "#e7c993";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-15, -18);
+        ctx.quadraticCurveTo(18 + charge * 7, 0, 15, 18);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-15, -18);
+        ctx.lineTo(-charge * 12, 0);
+        ctx.lineTo(15, 18);
+        ctx.stroke();
+      }
       ctx.drawImage(art.weapon(weapon.id), -24, -24, 48, 48);
       ctx.restore();
       ctx.globalAlpha = 1;
-      if (p.swing > 0) {
+      if (p.swing > 0 && !weapon.projectile) {
+        const progress = 1 - p.swing / 0.16;
+        const trailRange = weapon.range;
+        for (let i = 4; i >= 0; i--) {
+          ctx.save();
+          ctx.rotate(-0.7 + progress * 1.4 - i * 0.14);
+          ctx.globalAlpha = (1 - i / 5) * (1 - progress) * 0.75;
+          ctx.drawImage(
+            slash,
+            -trailRange,
+            -trailRange,
+            trailRange * 2,
+            trailRange * 2,
+          );
+          ctx.restore();
+        }
+        ctx.globalAlpha = 1;
         const wp = weaponData(p.weapons[s.activeSlot]);
         const range = wp.projectile ? 65 : wp.range;
         ctx.drawImage(slash, -range, -range, range * 2, range * 2);
@@ -764,7 +941,53 @@ export function createRenderer(canvas) {
         ctx.arc(s.target.x, s.target.y, s.target.radius + 8, 0, Math.PI * 2);
         ctx.stroke();
       }
+      for (const particle of particles.active) {
+        ctx.globalAlpha = Math.min(1, particle.life / particle.max);
+        if (particle.kind === "arrow") {
+          ctx.save();
+          ctx.translate(particle.x, particle.y);
+          ctx.rotate(particle.angle);
+          ctx.strokeStyle = particle.color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(-13, 0);
+          ctx.lineTo(5, 0);
+          ctx.stroke();
+          ctx.restore();
+        } else
+          circle(
+            particle.x,
+            particle.y,
+            particle.kind === "dust" ? 3 : 1.8,
+            particle.color,
+          );
+      }
+      ctx.globalAlpha = 1;
+      const tint = ["#051c13d0", "#071323df", "#240920dc"][
+        Math.floor((s.floor - 1) / 3)
+      ];
+      const light = ctx.createRadialGradient(
+        p.x,
+        p.y,
+        80,
+        p.x,
+        p.y,
+        (Math.max(w, h) / scale) * 0.75,
+      );
+      light.addColorStop(0, "#00000000");
+      light.addColorStop(1, tint);
+      ctx.fillStyle = light;
+      ctx.fillRect(
+        camera.x - w / scale,
+        camera.y - h / scale,
+        (w * 2) / scale,
+        (h * 2) / scale,
+      );
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (flashTime > 0 && !reduced) {
+        ctx.fillStyle = `rgba(255,235,190,${flashTime * 0.8})`;
+        ctx.fillRect(0, 0, w, h);
+      }
     },
     minimap(s, mini) {
       const c = mini.getContext("2d");

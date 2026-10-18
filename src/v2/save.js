@@ -1,3 +1,4 @@
+import { soundSettings } from "./sound.js";
 import { HEROES, TALENTS, WEAPONS, SKINS } from "./data.js";
 export const SAVE_KEY = "paladin.v2.save";
 export function freshSave() {
@@ -13,14 +14,14 @@ export function freshSave() {
     selectedSkin: "classic",
     talents: {},
     settings: {
-      sound: true,
-      music: false,
+      ...soundSettings(),
       haptics: true,
       shake: true,
       quality: "auto",
     },
     bestFloor: 1,
-    stats: { runs: 0, defeats: 0, kills: 0, rooms: 0 },
+    completedOnce: false,
+    stats: { runs: 0, defeats: 0, kills: 0, rooms: 0, victories: 0 },
     monetization: {
       sessions: 0,
       lastActivity: 0,
@@ -58,9 +59,13 @@ export function migrateSave(raw) {
     d.talents[k] = Math.min(v.max, Math.floor(number(raw.talents?.[k])));
   for (const k of ["sound", "music", "haptics"])
     if (typeof raw.settings?.[k] === "boolean") d.settings[k] = raw.settings[k];
+  Object.assign(d.settings, soundSettings(raw.settings));
+  d.completedOnce = raw.completedOnce === true;
   d.tutorialSeen = raw.tutorialSeen === true;
   d.settings.shake = raw.settings?.shake !== false;
-  d.settings.quality = ["low", "high", "auto"].includes(raw.settings?.quality) ? raw.settings.quality : "auto";
+  d.settings.quality = ["low", "high", "auto"].includes(raw.settings?.quality)
+    ? raw.settings.quality
+    : "auto";
   for (const k of Object.keys(d.stats)) d.stats[k] = number(raw.stats?.[k]);
   const m = raw.monetization || {};
   for (const k of [

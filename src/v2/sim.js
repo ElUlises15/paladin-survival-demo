@@ -192,7 +192,7 @@ export function spawnEnemy(s, type, r, boss = false) {
 function hit(s, e, damage, knockback = 0) {
   if (e.hp <= 0 || e.spawn > 0) return;
   e.hp -= damage;
-  s.events.push({ type: "hit" });
+  s.events.push({ type: "hit", x: e.x, y: e.y, heavy: damage >= 75 });
   s.effects.push({
     kind: "number",
     x: e.x,
@@ -213,7 +213,7 @@ function hit(s, e, damage, knockback = 0) {
       { kind: "soul", x: e.x, y: e.y, t: 1 },
     );
     s.kills++;
-    s.events.push({ type: e.boss ? "bossKill" : "kill" });
+    s.events.push({ type: e.boss ? "bossKill" : "kill", x: e.x, y: e.y });
     s.drops.push({ kind: "coin", x: e.x, y: e.y, amount: e.boss ? 80 : 4 });
     if (random(s) < 0.12)
       s.drops.push({
@@ -241,6 +241,7 @@ function shoot(s, e, a, speed = 180, damage = e.damage) {
   });
 }
 function bossAttack(s, e) {
+  s.events.push({ type: "slam", x: e.x, y: e.y });
   const world = Math.floor((s.floor - 1) / 3),
     phase = e.hp < e.maxHp * 0.5 ? 2 : 1,
     p = s.player,
@@ -344,6 +345,7 @@ export function interact(s) {
   }
   s.drops.splice(s.drops.indexOf(item), 1);
   if (item.kind === "chest") {
+    s.events.push({ type: "chest" });
     s.effects.push({ kind: "opened", x: item.x, y: item.y, t: 8 });
     const choice = random(s);
     s.drops.push(
@@ -437,7 +439,10 @@ function step(s, dt, input) {
       if (
         e.room === room.id &&
         e.hp > 0 &&
-        (e.x < room.x + 8 || e.x > room.x + room.w - 8 || e.y < room.y + 8 || e.y > room.y + room.h - 8)
+        (e.x < room.x + 8 ||
+          e.x > room.x + room.w - 8 ||
+          e.y < room.y + 8 ||
+          e.y > room.y + room.h - 8)
       ) {
         e.x = room.cx + (random(s) - 0.5) * 120;
         e.y = room.cy + (random(s) - 0.5) * 120;
@@ -465,7 +470,11 @@ function step(s, dt, input) {
               y: room.cy,
             });
           s.events.push({ type: "room" });
-          if (room.type === "boss")
+          // Jefe final del mundo 3: la sala se liquida (recompensas, conteo) y recién ahí termina la partida.
+          if (room.type === "boss" && s.floor === 9) {
+            s.mode = "victory";
+            s.events.push({ type: "victory" });
+          } else if (room.type === "boss")
             s.drops.push({
               kind: "portal",
               x: room.cx,
@@ -476,6 +485,12 @@ function step(s, dt, input) {
       }
     }
   }
+  if (
+    p.attackCd > 0 &&
+    p.attackCd <= dt &&
+    weaponData(p.weapons[s.activeSlot]).projectile
+  )
+    s.events.push({ type: "draw" });
   s.target = autoAim(s);
   if (s.target) p.facing = Math.atan2(s.target.y - p.y, s.target.x - p.x);
   if (input.interact) interact(s);
@@ -647,7 +662,16 @@ function step(s, dt, input) {
     }
     b.x += b.vx * dt;
     b.y += b.vy * dt;
-    if (solid(s.dungeon, b.x, b.y)) b.life = 0;
+    if (solid(s.dungeon, b.x, b.y)) {
+      b.life = 0;
+      if (!b.enemy)
+        s.events.push({
+          type: "arrowWall",
+          x: b.x - b.vx * dt,
+          y: b.y - b.vy * dt,
+          angle: Math.atan2(b.vy, b.vx),
+        });
+    }
     if (b.enemy) {
       if (p.dome > 0 && Math.hypot(p.x - b.x, p.y - b.y) < 95) b.life = 0;
       else if (Math.hypot(p.x - b.x, p.y - b.y) < p.radius + b.radius) {
@@ -694,7 +718,11 @@ function step(s, dt, input) {
       if (d.kind === "health") p.hp = Math.min(p.maxHp, p.hp + 18);
       if (d.kind === "energy") p.skillCd = Math.max(0, p.skillCd - 3);
       d.taken = true;
-      s.events.push({ type: "pickup" });
+      s.events.push({
+        type: d.kind === "health" ? "heal" : "pickup",
+        x: d.x,
+        y: d.y,
+      });
     }
   s.enemies = s.enemies.filter((e) => e.hp > 0);
   s.bullets = s.bullets.filter((b) => b.life > 0);

@@ -30,7 +30,8 @@ import {
 import { platform, configureDemo } from "./platform.js";
 import { createControls } from "./input.js";
 import { createRenderer } from "./renderer.js";
-import { createAudio } from "../audio.js";
+import { createSound } from "./sound.js";
+import { createInterpolation } from "./interpolation.js";
 installViewport();
 const $ = (id) => document.getElementById(id),
   screen = $("screen"),
@@ -42,8 +43,12 @@ try {
 const store = createSaveStore(storage);
 const errlog = createErrorLog(storage);
 window.__paladinErrors = () => errlog.list();
-window.addEventListener("error", (e) => errlog.record("window", e.error || e.message));
-window.addEventListener("unhandledrejection", (e) => errlog.record("promise", e.reason));
+window.addEventListener("error", (e) =>
+  errlog.record("window", e.error || e.message),
+);
+window.addEventListener("unhandledrejection", (e) =>
+  errlog.record("promise", e.reason),
+);
 let meta = store.load(),
   state = null,
   page = "lobby",
@@ -57,12 +62,13 @@ let meta = store.load(),
   busy = false,
   busySince = 0,
   loopErrors = 0,
+  victoryAt = 0,
   cancelModal = null,
   versionTaps = 0,
   debugVisible = new URLSearchParams(location.search).has("debug");
 const renderer = createRenderer($("game")),
-  audio = createAudio(window);
-if (!meta.settings.sound) audio.toggleMute();
+  audio = createSound(window, meta.settings),
+  interpolation = createInterpolation();
 recordSession(meta, Date.now());
 persist();
 function persist() {
@@ -94,7 +100,11 @@ function button(label, action, cls = "") {
   const b = document.createElement("button");
   b.textContent = label;
   b.className = cls;
-  b.onclick = action;
+  b.onclick = (...args) => {
+    audio.unlock();
+    audio.play(label.includes("Volver") ? "uiBack" : "uiTap");
+    return action(...args);
+  };
   return b;
 }
 function addButton(parent, label, action, cls = "") {
@@ -128,29 +138,53 @@ function panel(title, description = "") {
 }
 function show(name) {
   page = name;
+  screen.dataset.page = name;
+  interpolation.reset();
+  audio.scene(
+    name === "results" && result?.victory ? "victory" : name,
+    state?.floor,
+    state?.enemies.some((e) => e.boss && e.hp > 0),
+  );
   $("transition").hidden = true;
   controls?.clear();
   document.body.classList.toggle("playing", name === "game");
   $("hud").hidden = name !== "game";
   $("controls").hidden = name !== "game";
   screen.innerHTML = "";
+  $("room-banner").classList.remove("show");
   $("tutorial").hidden = true;
   if (name === "game") {
     if (!meta.tutorialSeen) {
       $("tutorial").hidden = false;
     }
 
-    if (state) state.mode = "playing";
+    if (state && state.mode === "paused") state.mode = "playing";
     return;
   }
   if (state?.mode === "playing") state.mode = "paused";
+  if (name === "splash") {
+    const c = panel(
+      "Paladin · Mazmorras",
+      "Nueve pisos. Una luz que no se apaga.",
+    );
+    c.classList.add("title-card");
+    const crest = document.createElement("canvas");
+    crest.width = crest.height = 160;
+    crest.className = "title-crest";
+    crest.setAttribute("aria-hidden", "true");
+    renderer.crest(crest);
+    c.prepend(crest);
+    addButton(c, "Tocá para empezar", () => show("lobby"), "primary");
+    screen.append(c);
+  }
+  if (name === "credits") credits();
   if (name === "lobby") lobby();
   if (name === "heroes") heroes();
   if (name === "talents") talents();
   if (name === "shop") shop();
   if (name === "settings") settings();
   if (name === "help") {
-    layout("Cómo jugar");
+    layout("Cómo jugar", previous);
     const c = panel(
       "Explorá. Peleá. Volvé más fuerte.",
       "Recorré nueve pisos en tres mundos. Entrá en las salas para enfrentar oleadas; las rejas se abren cuando vencés a todos. Buscá cofres y comprá con oro. Las almas mejoran talentos y desbloquean héroes; las gemas compran cosméticos.",
@@ -161,11 +195,15 @@ function show(name) {
   }
   if (name === "pause") {
     layout("Pausa", "game");
-    const c = panel("Tomate un respiro");
+    const c = panel("Tomate un respiro", runStats());
     addButton(c, "Reanudar", () => show("game"), "primary");
     addButton(c, "Ajustes", () => {
       previous = "pause";
       show("settings");
+    });
+    addButton(c, "Cómo jugar", () => {
+      previous = "pause";
+      show("help");
     });
     addButton(c, "Abandonar", async () => {
       if (
@@ -186,7 +224,7 @@ function show(name) {
 function lobby() {
   const vip = vipActive(meta, Date.now());
   if (meta.selectedSkin === "stellar" && !vip) meta.selectedSkin = "classic";
-  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">◈ ${meta.almas} almas &nbsp; ✧ ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? " · ✧ Pase del Paladín" : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.0 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
+  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">◈ ${meta.almas} almas &nbsp; ✧ ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario${meta.completedOnce ? ' <span class="completion-crest" title="Venciste al Abismo">♜</span>' : ""}</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? " · ✧ Pase del Paladín" : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.1.0 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
   const m = $("menu");
   if (meta.checkpoint)
     addButton(m, "Continuar partida", () => start(true), "primary");
@@ -212,6 +250,7 @@ function lobby() {
     ["Tienda", "shop"],
     ["Ajustes", "settings"],
     ["Cómo jugar", "help"],
+    ["Créditos", "credits"],
   ])
     addButton(m, label, () => {
       previous = "lobby";
@@ -248,13 +287,68 @@ function lobby() {
     }
   };
 }
+let heroTab = "heroes",
+  shopTab = "gems";
+function tabs(options, selected, change) {
+  const nav = document.createElement("nav");
+  nav.className = "screen-tabs";
+  for (const [id, label] of options) {
+    const b = addButton(
+      nav,
+      label,
+      () => change(id),
+      selected === id ? "primary" : "",
+    );
+    b.setAttribute("aria-pressed", String(id === selected));
+  }
+  screen.append(nav);
+}
 function heroes() {
   layout("Héroes y apariencias");
+  tabs(
+    [
+      ["heroes", "Héroes"],
+      ["skins", "Apariencias"],
+      ["weapons", "Armas"],
+    ],
+    heroTab,
+    (id) => {
+      heroTab = id;
+      show("heroes");
+    },
+  );
   const grid = document.createElement("div");
   grid.className = "cards";
   for (const [id, h] of Object.entries(HEROES)) {
     const owned = meta.heroes.includes(id),
       c = panel(h.name, `${h.hp} vida · ${h.armor} escudo · ${h.skill}`);
+    const portrait = document.createElement("canvas");
+    portrait.width = 100;
+    portrait.height = 80;
+    portrait.className = "hero-portrait";
+    renderer.portrait(portrait, id, meta.selectedSkin);
+    c.prepend(portrait);
+    for (const [label, value, max] of [
+      ["Vida", h.hp, 150],
+      ["Escudo", h.armor, 30],
+      ["Velocidad", h.speed, 300],
+    ]) {
+      const stat = document.createElement("label");
+      stat.className = "hero-stat";
+      stat.textContent = label;
+      const bar = document.createElement("meter");
+      bar.max = max;
+      bar.value = value;
+      stat.append(bar);
+      c.append(stat);
+    }
+    const desc = document.createElement("p");
+    desc.textContent = {
+      paladin: "Luz sagrada: golpeá a todos los enemigos cercanos.",
+      cruzada: "Cúpula protectora: resistí el ataque bajo tu escudo.",
+      inquisidor: "Juicio: desatá energía sobre tus enemigos.",
+    }[id];
+    c.append(desc);
     if (meta.selectedHero === id) c.classList.add("selected");
     addButton(
       c,
@@ -276,7 +370,7 @@ function heroes() {
     );
     grid.append(c);
   }
-  screen.append(grid);
+  if (heroTab === "heroes") screen.append(grid);
   const skins = document.createElement("div");
   skins.className = "cards";
   for (const sk of SKINS) {
@@ -313,7 +407,7 @@ function heroes() {
     );
     skins.append(c);
   }
-  screen.append(skins);
+  if (heroTab === "skins") screen.append(skins);
   const arms = document.createElement("div");
   arms.className = "cards";
   for (const [i, w] of WEAPONS.entries()) {
@@ -335,7 +429,7 @@ function heroes() {
     b.disabled = owned;
     arms.append(c);
   }
-  screen.append(arms);
+  if (heroTab === "weapons") screen.append(arms);
 }
 function talents() {
   layout("Talentos · solo con almas");
@@ -352,6 +446,7 @@ function talents() {
         if (meta.almas < cost) return toast("Te faltan almas");
         meta.almas -= cost;
         meta.talents[id] = rank + 1;
+        audio.play("levelUp");
         persist();
         show("talents");
       },
@@ -361,16 +456,72 @@ function talents() {
   }
   screen.append(grid);
 }
+function runStats() {
+  if (!state) return "";
+  return `Piso ${state.floor}/9 · ${state.rooms} salas · ${state.kills} bajas · ${Math.floor(state.time / 60)}:${String(Math.floor(state.time % 60)).padStart(2, "0")}`;
+}
+function credits() {
+  layout("Créditos");
+  screen.querySelector("header button").onclick = () => {
+    state = null;
+    show("lobby");
+  };
+  const roll = document.createElement("div");
+  roll.className = "credits-window";
+  const content = document.createElement("div");
+  content.className = "credits-roll";
+  for (const text of [
+    "Paladin · Mazmorras",
+    "Juego: Ulises Ignacio Bentancor",
+    "Arte, música y sonido procedurales originales",
+    "Motor: Canvas 2D + Capacitor",
+    "Agradecimientos",
+    "A vos, por mantener viva la luz.",
+  ]) {
+    const p = document.createElement("p");
+    p.textContent = text;
+    content.append(p);
+  }
+  roll.append(content);
+  screen.append(roll);
+  addButton(
+    screen,
+    "Volver al Santuario",
+    () => {
+      state = null;
+      show("lobby");
+    },
+    "primary",
+  );
+}
 let prices = PRODUCTS;
 function shop() {
   layout(`Tienda · ${meta.gemas} gemas`);
+  tabs(
+    [
+      ["gems", "Gemas"],
+      ["extras", "Extras"],
+      ["vip", "Pase"],
+    ],
+    shopTab,
+    (id) => {
+      shopTab = id;
+      show("shop");
+    },
+  );
   const note = document.createElement("p");
   note.textContent =
     "Las compras dan gemas y cosméticos. Los talentos y los héroes se consiguen jugando. Los anuncios con recompensa son opcionales.";
   screen.append(note);
   const grid = document.createElement("div");
   grid.className = "cards";
-  for (const p of PRODUCTS) {
+  for (const p of PRODUCTS.filter((p) =>
+    shopTab === "gems"
+      ? p.id.startsWith("gems_")
+      : shopTab === "vip"
+        ? p.id === "vip_monthly"
+        : !p.id.startsWith("gems_") && p.id !== "vip_monthly",
+  )) {
     const c = panel(
       p.title,
       p.id === "remove_ads"
@@ -403,8 +554,7 @@ function settings() {
   const c = panel("A tu medida");
   c.classList.add("settings");
   for (const [id, label] of [
-    ["sound", "Sonido"],
-    ["music", "Música (sin pista musical)"],
+    ["masterMute", "Silenciar todo"],
     ["haptics", "Vibración"],
     ["shake", "Sacudida de cámara"],
   ]) {
@@ -413,14 +563,38 @@ function settings() {
     const i = document.createElement("input");
     i.type = "checkbox";
     i.checked = meta.settings[id];
-    if (id === "music") i.disabled = true;
     i.onchange = () => {
       meta.settings[id] = i.checked;
-      if (id === "sound" && audio.muted === i.checked) audio.toggleMute();
+      audio.configure(meta.settings);
       persist();
     };
     l.append(i);
     c.append(l);
+  }
+  for (const [id, label] of [
+    ["musicVolume", "Música"],
+    ["sfxVolume", "Efectos"],
+  ]) {
+    const row = document.createElement("label");
+    row.textContent = label;
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = 0;
+    slider.max = 1;
+    slider.step = 0.01;
+    slider.value = meta.settings[id];
+    slider.setAttribute("aria-label", label);
+    slider.oninput = () => {
+      meta.settings[id] = Number(slider.value);
+      audio.configure(meta.settings);
+      persist();
+    };
+    slider.onchange = () => {
+      audio.unlock();
+      if (id === "sfxVolume") audio.play("uiTap");
+    };
+    row.append(slider);
+    c.append(row);
   }
   const l = document.createElement("label");
   l.textContent = "Calidad";
@@ -449,6 +623,14 @@ function settings() {
     );
   });
   addButton(c, "Restaurar compras", () => restore(true));
+  addButton(c, "Restablecer tutorial", () => {
+    meta.tutorialSeen = false;
+    persist();
+    toast("Vas a ver el tutorial al jugar");
+  });
+  const note = document.createElement("p");
+  note.textContent = "Español rioplatense · v2.1.0";
+  c.append(note);
   addButton(c, "Borrar progreso", async () => {
     if (
       await confirmDialog(
@@ -457,6 +639,7 @@ function settings() {
       )
     ) {
       meta = store.reset();
+      audio.configure(meta.settings);
       state = null;
       show("lobby");
     }
@@ -464,8 +647,13 @@ function settings() {
   screen.append(c);
 }
 function start(cont = false, options = {}) {
+  victoryAt = 0;
   flowRewarded = false;
   result = null;
+  updateHud.bossId = null;
+  const ghost = $("hpghost");
+  if (ghost) ghost.value = 0;
+  renderer.resetEffects();
   state = createRun(meta, {
     seed: Date.now() >>> 0,
     checkpoint: cont ? meta.checkpoint : null,
@@ -490,12 +678,18 @@ function pause() {
     return;
   }
   if (busy) return;
+  if (page === "game" && state?.mode === "victory") {
+    // Victoria pendiente (cinemática): no se puede pausar ni "des-ganar"; se cierra ya.
+    victoryAt = 0;
+    finish(true);
+    return;
+  }
   if (page === "game") {
-    state.mode = "paused";
+    if (state.mode === "playing") state.mode = "paused";
     show("pause");
   } else if (page === "pause") show("game");
   else if (["heroes", "talents", "shop", "settings", "help"].includes(page))
-    show(page === "settings" ? previous : "lobby");
+    show(page === "settings" || page === "help" ? previous : "lobby");
 }
 const controls = createControls(
   $("game"),
@@ -509,7 +703,7 @@ function death() {
   screen.querySelector("header button").remove();
   const c = panel(
     "Todavía queda luz",
-    "Podés revivir una vez por partida mirando un anuncio opcional.",
+    `${runStats()} · Podés revivir una vez por partida mirando un anuncio opcional.`,
   );
   if (!state.revived)
     addButton(
@@ -541,6 +735,8 @@ function finish(victory) {
     doubled: false,
   };
   if (victory) {
+    meta.stats.victories++;
+    meta.completedOnce = true;
     result.almas += 35;
     result.gemas += 5;
   }
@@ -554,15 +750,22 @@ function finish(victory) {
   meta.checkpoint = null;
   state.mode = victory ? "victory" : "dead";
   persist();
+  audio.play(victory ? "victory" : "defeat");
   show("results");
 }
 function results() {
-  layout(result.victory ? "Victoria · El alba vuelve" : "Resultados");
+  layout(result.victory ? "¡Victoria!" : "Resultados");
   screen.querySelector("header button").remove();
   const c = panel(
     result.victory ? "Venciste al Abismo" : "Tu alma vuelve al Santuario",
     `${result.rooms} salas · ${result.kills} bajas · ${Math.floor(result.time / 60)}:${String(Math.floor(result.time % 60)).padStart(2, "0")} · ${result.almas} almas · ${result.gemas} gemas`,
   );
+  if (result.victory) {
+    const bonus = document.createElement("p");
+    bonus.textContent = "Bonus de victoria incluido: +35 almas · +5 gemas";
+    c.append(bonus);
+    addButton(c, "Ver créditos", () => show("credits"));
+  }
   if (!result.doubled)
     addButton(c, "Doble recompensa · Ver anuncio", async () => {
       if (await rewarded("double")) {
@@ -586,18 +789,18 @@ function results() {
       busy = true;
       busySince = Date.now();
       try {
-      if (
-        shouldShowInterstitial(meta, Date.now(), {
-          victory: result.victory,
-          rewardedInFlow: flowRewarded,
-        })
-      ) {
-        const r = await platform.ads.showInterstitial();
-        if (r.shown) {
-          meta.monetization.lastInterstitial = Date.now();
-          persist();
+        if (
+          shouldShowInterstitial(meta, Date.now(), {
+            victory: result.victory,
+            rewardedInFlow: flowRewarded,
+          })
+        ) {
+          const r = await platform.ads.showInterstitial();
+          if (r.shown) {
+            meta.monetization.lastInterstitial = Date.now();
+            persist();
+          }
         }
-      }
       } catch (e) {
         errlog.record("interstitial", e);
       } finally {
@@ -628,6 +831,7 @@ async function rewarded(kind) {
     toast("Anuncio no disponible, probá más tarde");
     return false;
   }
+  audio.play("reward");
   meta.monetization.lastRewarded = Date.now();
   persist();
   return true;
@@ -736,6 +940,7 @@ async function purchaseFlow(id) {
       expiry,
     );
     if (credited) {
+      audio.play("reward");
       persist();
       await platform.billing.finish(r.transactionId, id);
       toast("Compra acreditada");
@@ -765,10 +970,12 @@ async function restore(notify = false) {
   if (notify) toast("Compras restauradas");
 }
 platform.app.onPause(() => {
+  audio.suspend();
   if (page === "game") pause();
   persist();
 });
 platform.app.onResume(() => {
+  audio.resume();
   resetInput("resume");
   recordSession(meta, Date.now());
   persist();
@@ -802,6 +1009,7 @@ platform.app.onBack(() => {
 });
 function resetInput(why) {
   controls.clear();
+  interpolation.reset();
   last = performance.now();
   acc = 0;
   measure();
@@ -811,8 +1019,12 @@ window.addEventListener("focus", () => resetInput("focus"));
 window.addEventListener("paladin-native-revive", () => resetInput("native"));
 window.addEventListener("pageshow", () => resetInput("pageshow"));
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) resetInput("visible");
+  if (!document.hidden) {
+    audio.resume();
+    resetInput("visible");
+  }
   if (document.hidden) {
+    audio.suspend();
     if (page === "game") pause();
     persist();
   }
@@ -832,19 +1044,31 @@ function events() {
       if (style && !(e.type === "damage" && state.mode === "dead"))
         platform.haptics.impact(style);
     }
+    renderer.event(e, state, meta);
+    const ranged = weaponData(
+      state.player.weapons[state.activeSlot],
+    ).projectile;
     const sound = {
-      hit: "hit",
-      dash: "swing",
-      skill: "spin",
-      pickup: "levelUp",
-      lock: "waveStart",
-      room: "swordUpgrade",
-      roar: "gameOver",
+      hit: ranged ? "arrowHit" : "swordHit",
+      dash: "dash",
+      skill: "levelUp",
+      pickup: "pickupGold",
+      lock: "doorClose",
+      room: "doorOpen",
+      roar: "bossRoar",
+      arrowWall: "arrowHit",
+      slam: "bossSlam",
+      damage: "playerHurt",
+      kill: "enemyDeath",
+      bossKill: "enemyDeath",
+      death: "defeat",
+      chest: "chestOpen",
+      heal: "pickupHeal",
+      attack: ranged ? "arrowRelease" : "swordSwing",
     }[e.type];
     if (sound) audio.play(sound);
-    if (e.type === "attack") audio.play("swing");
-    if (e.type === "damage") audio.play("playerHit");
-    if (e.type === "kill" || e.type === "bossKill") audio.play("kill");
+    if (e.type === "hit") audio.play("enemyHit");
+    if (e.type === "draw") audio.play("bowDraw");
     if (e.type === "poor") toast("Te falta oro");
     if (e.type === "floor") {
       meta.checkpoint = checkpoint(state);
@@ -893,6 +1117,11 @@ function updateHud() {
 
   const p = state.player,
     f = state.floor;
+  const ghost = $("hpghost");
+  if (ghost) {
+    ghost.max = p.maxHp;
+    ghost.value = Math.max(p.hp, (ghost.value || p.hp) - p.maxHp * 0.015);
+  }
   $("floor").textContent =
     `${Math.ceil(f / 3)}-${((f - 1) % 3) + 1} · ${WORLDS[Math.floor((f - 1) / 3)]}`;
   $("hp").textContent = `♥ ${Math.ceil(p.hp)} / ${Math.ceil(p.maxHp)}`;
@@ -939,7 +1168,17 @@ function updateHud() {
     "bossbar",
     boss ? `${boss.name}<meter min="0" max="${boss.maxHp}"></meter>` : "",
   );
-  if (boss) $("bossbar").querySelector("meter").value = boss.hp;
+  if (boss) {
+    $("bossbar").querySelector("meter").value = boss.hp;
+    if (boss.id !== updateHud.bossId) {
+      updateHud.bossId = boss.id;
+      $("room-banner").textContent = boss.name;
+      $("room-banner").classList.remove("show");
+      void $("room-banner").offsetWidth;
+      $("room-banner").classList.add("show");
+    }
+  }
+  audio.scene(page, state.floor, !!boss);
   renderer.minimap(state, $("minimap"));
 }
 function renderDebug() {
@@ -1064,12 +1303,27 @@ function frame(now) {
   if (page === "game" && state && !document.hidden && !(vp.h > vp.w * 1.05)) {
     try {
       let steps = 0;
-      while (acc >= 1 / 60 && page === "game" && steps++ < 8) {
+      while (
+        acc >= 1 / 60 &&
+        page === "game" &&
+        state.mode === "playing" &&
+        steps++ < 8
+      ) {
+        interpolation.snapshot(state);
         updateRun(state, 1 / 60, controls.read());
         events();
         acc -= 1 / 60;
         if (state.mode === "dead") show("death");
-        else if (state.mode === "victory") finish(true);
+        else if (state.mode === "victory" && !victoryAt) {
+          // Dejar ver la muerte del jefe final (destello, partículas, cámara lenta) antes del cartel.
+          victoryAt = now;
+          $("transition").textContent = "¡Victoria!";
+          $("transition").hidden = false;
+        }
+      }
+      if (state.mode === "victory" && victoryAt && now - victoryAt > 1800) {
+        victoryAt = 0;
+        finish(true);
       }
       if (steps >= 8) acc = 0; // nunca acumular atraso (espiral de la muerte)
       if (page === "game" && now - hudTime > 66) {
@@ -1093,7 +1347,13 @@ function frame(now) {
     }
   } else acc = 0;
   try {
-    renderer.render(state, meta, dt);
+    renderer.render(
+      page === "lobby" || page === "splash" || page === "credits"
+        ? null
+        : interpolation.render(state, page === "game" ? acc / (1 / 60) : 1),
+      meta,
+      dt,
+    );
   } catch (e) {
     errlog.record("render", e);
   }
@@ -1102,7 +1362,8 @@ function frame(now) {
 // Guardián cada 1 s: bucle vivo, overlays coherentes con la pantalla, busy que no se traba.
 function watchdog() {
   try {
-    if (!document.hidden && loop.check(true)) errlog.record("watchdog", "loop restarted");
+    if (!document.hidden && loop.check(true))
+      errlog.record("watchdog", "loop restarted");
     measure();
     const now = Date.now();
     if (busy && busySince && now - busySince > 660000) {
@@ -1123,7 +1384,10 @@ function watchdog() {
         errlog.record("watchdog", "paused while in game");
         state.mode = "playing";
       }
-      if ($("controls").hidden || !document.body.classList.contains("playing")) {
+      if (
+        $("controls").hidden ||
+        !document.body.classList.contains("playing")
+      ) {
         errlog.record("watchdog", "controls hidden in game");
         $("controls").hidden = false;
         $("hud").hidden = false;
@@ -1135,15 +1399,21 @@ function watchdog() {
   }
 }
 window.__paladinWatchdog = watchdog;
-window.addEventListener("pointerdown", () => audio.unlock(), { once: true });
-show("lobby");
+// Sin "once": iOS puede interrumpir el AudioContext al volver de segundo plano; el siguiente toque lo reanuda.
+window.addEventListener("pointerdown", () => audio.unlock(), { capture: true, passive: true });
+window.addEventListener("keydown", () => audio.unlock(), { capture: true, passive: true });
+show("splash");
 const loop = createLoopGuard((cb) => requestAnimationFrame(cb), frame);
 loop.start();
 setInterval(watchdog, 1000);
 // La inicialización de anuncios/consentimiento/compras nunca bloquea el juego: corre aparte.
 Promise.all([
-  Promise.resolve().then(() => platform.ads.init()).catch((e) => errlog.record("ads.init", e)),
-  Promise.resolve().then(() => platform.billing.init()).catch((e) => errlog.record("billing.init", e)),
+  Promise.resolve()
+    .then(() => platform.ads.init())
+    .catch((e) => errlog.record("ads.init", e)),
+  Promise.resolve()
+    .then(() => platform.billing.init())
+    .catch((e) => errlog.record("billing.init", e)),
 ])
   .then(async () => {
     await restore();

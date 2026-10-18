@@ -204,5 +204,52 @@ export function createArt() {
       64,
     );
   }
-  return { boss, weapon };
+  function crest() {
+    return get("crest", (c) => {
+      c.fillStyle = "#172a2a";
+      c.strokeStyle = "#dfbf77";
+      c.lineWidth = 5;
+      c.beginPath();
+      c.moveTo(-54, -62);
+      c.quadraticCurveTo(0, -85, 54, -62);
+      c.lineTo(48, 20);
+      c.quadraticCurveTo(30, 65, 0, 79);
+      c.quadraticCurveTo(-30, 65, -48, 20);
+      c.closePath();
+      c.fill();
+      c.stroke();
+      c.strokeStyle = "#819b80";
+      c.lineWidth = 2;
+      c.beginPath();
+      c.arc(0, -8, 35, 0, Math.PI * 2);
+      c.stroke();
+      c.fillStyle = "#f5de9f";
+      c.beginPath();
+      c.moveTo(0, -60);
+      c.lineTo(8, -36);
+      c.lineTo(5, 22);
+      c.lineTo(24, 24);
+      c.lineTo(24, 32);
+      c.lineTo(5, 32);
+      c.lineTo(5, 51);
+      c.lineTo(-5, 51);
+      c.lineTo(-5, 32);
+      c.lineTo(-24, 32);
+      c.lineTo(-24, 24);
+      c.lineTo(-5, 22);
+      c.lineTo(-8, -36);
+      c.closePath();
+      c.fill();
+    });
+  }
+  function bossFlash(world, phase) {
+    return get(`bossFlash:${world}:${phase}`, (c) => {
+      c.drawImage(boss(world, phase), -96, -96);
+      c.globalCompositeOperation = "source-atop";
+      c.fillStyle = "#ffffff";
+      c.fillRect(-96, -96, 192, 192);
+      c.globalCompositeOperation = "source-over";
+    });
+  }
+  return { boss, bossFlash, weapon, crest };
 }
