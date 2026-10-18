@@ -23,9 +23,9 @@ export function autoStep(current, frameAvg, timer, maxDpr, drops = 0) {
   const levels = AUTO_LEVELS.filter((l) => l <= maxDpr + 1e-6);
   if (!levels.length) levels.push(0.75);
   const i = Math.max(0, levels.findIndex((l) => Math.abs(l - current) < 1e-6));
-  // Bajar: 2 s seguidos por debajo de ~48 fps. Subir: 10 s por encima de ~58 fps y sólo si bajó ≤ 1 vez.
+  // Bajar: 2 s seguidos por debajo de ~48 fps. Subir: 10 s por encima de ~58 fps y sólo si nunca bajó (sin vaivén).
   if (frameAvg > 1 / 48 && timer > 2 && i > 0) return { scale: levels[i - 1], timer: 0 };
-  if (frameAvg < 1 / 58 && timer > 10 && i < levels.length - 1 && drops <= 1)
+  if (frameAvg < 1 / 58 && timer > 10 && i < levels.length - 1 && drops === 0)
     return { scale: levels[i + 1], timer: 0 };
   if (frameAvg >= 1 / 58 && frameAvg <= 1 / 48) return { scale: current, timer: 0 };
   return { scale: current, timer };
