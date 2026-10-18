@@ -1,4 +1,5 @@
 import { installViewport, viewport, measure } from "./viewport.js";
+import { iconSvg } from "./icons.js";
 import { createErrorLog, createLoopGuard } from "./watchdog.js";
 import {
   HEROES,
@@ -84,23 +85,27 @@ function toast(message) {
   toast.timer = setTimeout(() => ($("toast").hidden = true), 3000);
 }
 function icon(kind) {
-  const paths = {
-    gem: "M8 3h16l6 9-14 18L2 12Z M2 12h28 M8 3l8 27L24 3",
-    sword: "M8 24 27 5l1-1v1L9 25M5 20l7 7M3 29l4-4",
-    crossbow: "M11 2q17 14 0 28M11 2v28M4 16h24M24 12l5 4-5 4M4 13l3 3-3 3",
-    staff: "M6 28 23 11M23 3l5 5-5 5-5-5Z",
-    hammer: "M7 28 21 14M13 5l6-4 12 12-5 6Z",
-    spear: "M4 29 24 9M21 10l7-7-1 9Z",
-    axes: "M6 28 25 5M6 5l20 23M4 4l9 2-7 8ZM20 4l9 3-5 7Z",
-    skill: "M16 2l4 9 10 5-10 4-4 10-4-10-10-4 10-5Z",
-    dash: "M3 10h10M1 17h9M4 24h10M15 6l13 10-13 10 4-10Z",
-    hand: "M9 27V14q0-4 3-1V6q0-4 3 0v8-10q3-4 3 0v10-7q3-3 3 1v8q6-5 7-1l-5 12Z",
-  };
-  return `<svg viewBox="0 0 32 32" aria-hidden="true"><path d="${paths[kind] || paths.sword}"/></svg>`;
+  return iconSvg(kind);
+}
+// Glifos de moneda en textos → íconos vectoriales (el nombre accesible queda en el texto).
+const GLYPHS = {
+  "✧": "gem",
+  "◈": "soul",
+  "●": "coin",
+  "♥": "heart",
+  "♜": "crown",
+};
+function withIcons(text) {
+  const esc = String(text).replace(
+    /[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+  );
+  return esc.replace(/[✧◈●♥♜]/g, (g) => iconSvg(GLYPHS[g], { cls: "inline" }));
 }
 function button(label, action, cls = "") {
   const b = document.createElement("button");
-  b.textContent = label;
+  if (/[✧◈●♥♜]/.test(label)) b.innerHTML = withIcons(label);
+  else b.textContent = label;
   b.className = cls;
   b.onclick = (...args) => {
     audio.unlock();
@@ -226,7 +231,7 @@ function show(name) {
 function lobby() {
   const vip = vipActive(meta, Date.now());
   if (meta.selectedSkin === "stellar" && !vip) meta.selectedSkin = "classic";
-  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">◈ ${meta.almas} almas &nbsp; ✧ ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario${meta.completedOnce ? ' <span class="completion-crest" title="Venciste al Abismo">♜</span>' : ""}</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? " · ✧ Pase del Paladín" : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.2.0 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
+  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">${iconSvg("soul", { cls: "inline" })} ${meta.almas} almas &nbsp; ${iconSvg("gem", { cls: "inline" })} ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario${meta.completedOnce ? ` <span class="completion-crest" title="Venciste al Abismo">${iconSvg("crown")}</span>` : ""}</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? ` · ${iconSvg("star", { cls: "inline" })} Pase del Paladín` : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.3.0 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
   const m = $("menu");
   if (meta.checkpoint)
     addButton(m, "Continuar partida", () => start(true), "primary");
@@ -631,7 +636,7 @@ function settings() {
     toast("Vas a ver el tutorial al jugar");
   });
   const note = document.createElement("p");
-  note.textContent = "Español rioplatense · v2.2.0";
+  note.textContent = "Español rioplatense · v2.3.0";
   c.append(note);
   addButton(c, "Borrar progreso", async () => {
     if (
@@ -711,6 +716,7 @@ const controls = createControls(
   pause,
 );
 $("pause").onclick = pause;
+$("pause").innerHTML = `${iconSvg("pause", { cls: "inline" })} Pausa`;
 $("minimap").onclick = () => $("minimap").classList.toggle("large");
 function death() {
   layout("Caíste", "lobby");
@@ -1082,9 +1088,19 @@ function events() {
     }[e.type];
     // golpe de espada: el sonido metálico lo emite el renderer cuando la hoja llega (takeCues)
     if (sound && !((e.type === "hit" || e.type === "kill") && deferred))
-      audio.play(sound, e.type === "attack" && !ranged ? { variant: renderer.swingVariant } : { heavy: e.heavy });
+      audio.play(
+        sound,
+        e.type === "attack"
+          ? ranged
+            ? { level: e.level, weak: e.weak, full: e.full }
+            : { variant: renderer.swingVariant }
+          : { heavy: e.heavy },
+      );
     if (e.type === "hit" && !deferred) audio.play("enemyHit");
-    if (e.type === "draw") audio.play("bowDraw");
+    if (e.type === "draw" || e.type === "drawStage")
+      audio.play("bowDraw", { level: e.level || 0 });
+    if (e.type === "drawFull") audio.play("bowFull");
+    if (e.type === "drawCancel") audio.play("bowCancel");
     if (e.type === "poor") toast("Te falta oro");
     if (e.type === "floor") {
       meta.checkpoint = checkpoint(state);
@@ -1140,14 +1156,20 @@ function updateHud() {
   }
   $("floor").textContent =
     `${Math.ceil(f / 3)}-${((f - 1) % 3) + 1} · ${WORLDS[Math.floor((f - 1) / 3)]}`;
-  $("hp").textContent = `♥ ${Math.ceil(p.hp)} / ${Math.ceil(p.maxHp)}`;
+  setHudHTML(
+    "hp",
+    `${iconSvg("heart", { cls: "inline" })} ${Math.ceil(p.hp)} / ${Math.ceil(p.maxHp)}`,
+  );
   $("hpbar").max = p.maxHp;
   $("hpbar").value = p.hp;
-  $("armor").textContent = `◈ ${Math.ceil(p.armor)} / ${p.maxArmor}`;
+  setHudHTML(
+    "armor",
+    `${iconSvg("shield", { cls: "inline" })} ${Math.ceil(p.armor)} / ${p.maxArmor}`,
+  );
   $("armorbar").max = p.maxArmor;
   $("armorbar").value = p.armor;
   const w = weaponData(p.weapons[state.activeSlot]);
-  $("gold").textContent = `● ${p.oro} oro`;
+  setHudHTML("gold", `${iconSvg("coin", { cls: "inline" })} ${p.oro} oro`);
   const item = nearestInteract(state);
   $("attack").dataset.interact = String(!!item);
   setHudHTML(
@@ -1298,7 +1320,9 @@ function setupLayersPanel() {
   if (
     typeof saved.res === "string" &&
     (saved.res === "auto" ||
-      resolutionLevels(devicePixelRatio || 1).some((v) => String(v) === saved.res))
+      resolutionLevels(devicePixelRatio || 1).some(
+        (v) => String(v) === saved.res,
+      ))
   )
     renderer.setLayer("res", saved.res);
   if (!layersVisible) return;
@@ -1351,7 +1375,8 @@ function setupLayersPanel() {
   document.body.append(box);
   setInterval(() => {
     const cv = $("game");
-    $("layers-info").textContent = `canvas ${cv.width}×${cv.height} · css ${cv.clientWidth}×${cv.clientHeight} · DPR ${devicePixelRatio} · ${Math.round(fps)} fps`;
+    $("layers-info").textContent =
+      `canvas ${cv.width}×${cv.height} · css ${cv.clientWidth}×${cv.clientHeight} · DPR ${devicePixelRatio} · ${Math.round(fps)} fps`;
   }, 500);
 }
 setupLayersPanel();
@@ -1510,8 +1535,14 @@ function watchdog() {
 }
 window.__paladinWatchdog = watchdog;
 // Sin "once": iOS puede interrumpir el AudioContext al volver de segundo plano; el siguiente toque lo reanuda.
-window.addEventListener("pointerdown", () => audio.unlock(), { capture: true, passive: true });
-window.addEventListener("keydown", () => audio.unlock(), { capture: true, passive: true });
+window.addEventListener("pointerdown", () => audio.unlock(), {
+  capture: true,
+  passive: true,
+});
+window.addEventListener("keydown", () => audio.unlock(), {
+  capture: true,
+  passive: true,
+});
 show("splash");
 const loop = createLoopGuard((cb) => requestAnimationFrame(cb), frame);
 loop.start();

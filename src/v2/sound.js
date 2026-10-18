@@ -67,6 +67,8 @@ const cues = {
   swordHit: [240, 0.14, 0.5],
   bowDraw: [110, 0.19, 0.35],
   arrowRelease: [650, 0.1, 0.5],
+  bowFull: [1760, 0.12, 0],
+  bowCancel: [180, 0.1, 0.4],
   arrowHit: [340, 0.12, 0.6],
   arrowWall: [150, 0.12, 0.5],
   footstep: [100, 0.06, 1],
@@ -314,33 +316,57 @@ export function createSound(env = globalThis, initial = {}) {
         return true;
       }
       case "swordHit": {
-        const base = (opts.heavy ? 530 : 660) * jitter;
-        noiseLayer({ duration: 0.018, amplitude: opts.heavy ? 0.15 : 0.1,
-          filter: "highpass", cutoff: 1800 });
-        [1, 2.76, 5.4, 8.9].forEach((ratio, i) => layer(time, {
-          frequency: base * ratio, duration: [0.35, 0.22, 0.13, 0.07][i],
-          amplitude: (opts.heavy ? 0.12 : 0.085) / (i + 1),
-          wave: i === 1 ? "triangle" : "sine",
-        }));
-        layer(time, { frequency: opts.heavy ? 100 : 145, to: 55,
-          duration: 0.13, amplitude: opts.heavy ? 0.15 : 0.09 });
+        // "clink-clink": dos golpes metálicos brillantes con modos inarmónicos (placa/hoja) que
+        // resuenan, un transitorio agudo y un batido leve (pares desafinados) para el brillo.
+        const heavy = !!opts.heavy, base = (heavy ? 1180 : 1520) * jitter;
+        const ratios = [1, 1.47, 2.09, 2.76, 3.93], rings = [0.5, 0.36, 0.26, 0.18, 0.11];
+        [0, heavy ? 0.052 : 0.045].forEach((offset, hitIndex) => {
+          const t = time + offset, k = hitIndex ? 0.62 : 1, f0 = base * (hitIndex ? 1.07 : 1);
+          layer(t, { noise: true, duration: 0.012, amplitude: (heavy ? 0.16 : 0.12) * k,
+            filter: "highpass", cutoff: 3800 });
+          ratios.forEach((ratio, i) => layer(t, {
+            frequency: f0 * ratio, duration: rings[i] * (heavy ? 1.25 : 1),
+            amplitude: (heavy ? 0.075 : 0.06) * k / (1 + i * 0.7), wave: "sine", attack: 0.0015,
+          }));
+          layer(t, { frequency: f0 * 1.003 + 3, duration: rings[0] * 0.9,
+            amplitude: 0.022 * k, wave: "sine", attack: 0.0015 });
+        });
+        layer(time, { frequency: heavy ? 120 : 165, to: 60, duration: 0.11,
+          amplitude: heavy ? 0.13 : 0.07 });
         return true;
       }
-      case "bowDraw":
-        layer(time, { frequency: 86 * jitter, to: 108 * jitter, wave: "sawtooth",
+      case "bowFull":
+        // "ping" de tensado completo: campanita corta y aguda, sutil
+        [1760, 2640].forEach((frequency, i) => layer(time, { frequency: frequency * jitter,
+          duration: i ? 0.12 : 0.22, amplitude: i ? 0.014 : 0.03, wave: "sine", attack: 0.002 }));
+        return true;
+      case "bowCancel":
+        layer(time, { frequency: 150 * jitter, to: 110, wave: "triangle", duration: 0.12,
+          amplitude: 0.035, filter: "lowpass", cutoff: 900 });
+        return true;
+      case "bowDraw": {
+        // crujido que sube con el nivel de tensado (0, 1/3, 2/3)
+        const up = 1 + (opts.level || 0) * 0.6;
+        layer(time, { frequency: 86 * jitter * up, to: 108 * jitter * up, wave: "sawtooth",
           duration: 0.3, amplitude: 0.025, filter: "bandpass", cutoff: 380,
           cutoffTo: 650, q: 2, modulation: 0.009, attack: 0.025 });
         for (const offset of [0.04, 0.117, 0.231]) layer(time + offset, {
           noise: true, duration: 0.009, amplitude: 0.008,
-          filter: "bandpass", cutoff: 1100 * jitter,
+          filter: "bandpass", cutoff: 1100 * jitter * up,
         });
         return true;
-      case "arrowRelease":
+      }
+      case "arrowRelease": {
+        // chasquido de cuerda + silbido; más fuerte y largo cuanto más tensado
+        const level = opts.level ?? 1, power = opts.weak ? 0.45 : 0.6 + 0.4 * level;
         layer(time, { frequency: 210 * jitter, to: 177 * jitter, wave: "triangle",
-          duration: 0.25, amplitude: 0.11, filter: "lowpass", cutoff: 2400,
+          duration: 0.15 + 0.12 * level, amplitude: 0.11 * power, filter: "lowpass", cutoff: 2400,
           cutoffTo: 600, modulation: 5, vibrato: true, pitchDuration: 0.035 });
-        sweep(time, 5400 * jitter, 1800 * jitter, 0.12, 0.12, 2);
+        sweep(time, 5400 * jitter, 1800 * jitter, 0.08 + 0.08 * level, 0.12 * power, 2);
+        if (opts.full) layer(time, { noise: true, duration: 0.03, amplitude: 0.05,
+          filter: "highpass", cutoff: 2600 });
         return true;
+      }
       case "arrowWall":
         layer(time, { frequency: 150, to: 60, duration: 0.12, amplitude: 0.13 });
         noiseLayer({ duration: 0.01, amplitude: 0.1, filter: "highpass", cutoff: 2200 });

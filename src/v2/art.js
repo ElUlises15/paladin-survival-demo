@@ -1,3 +1,4 @@
+import { iconDataUrl } from "./icons.js";
 // Original procedural artwork. Rasterized once, shared by every frame.
 export function createArt() {
   const cache = new Map();
@@ -175,6 +176,21 @@ export function createArt() {
       }
     });
   }
+  // Ícono vectorial (icons.js) rasterizado una vez cargado; null mientras carga (el que llama usa su glifo).
+  const vector = new Map();
+  function icon(name) {
+    if (typeof Image === "undefined") return null;
+    let v = vector.get(name);
+    if (!v) {
+      v = { img: new Image(), ready: false };
+      v.img.onload = () => (v.ready = true);
+      v.img.src = iconDataUrl(name);
+      vector.set(name, v);
+    }
+    return v.ready
+      ? get("icon:" + name, (c) => c.drawImage(v.img, -30, -30, 60, 60), 64)
+      : null;
+  }
   function weapon(kind) {
     return get(
       "weapon:" + kind,
@@ -251,5 +267,5 @@ export function createArt() {
       c.globalCompositeOperation = "source-over";
     });
   }
-  return { boss, bossFlash, weapon, crest };
+  return { boss, bossFlash, weapon, crest, icon };
 }

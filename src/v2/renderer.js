@@ -2,14 +2,17 @@ import { createParticles } from "./effects.js";
 import { viewport, cameraScale } from "./viewport.js";
 import { createArt } from "./art.js";
 import { TILE, SIZE } from "./dungeon.js";
-import { weaponData, RARITIES } from "./data.js";
+import { weaponData, RARITIES, BOW } from "./data.js";
 import { createSpriteCache } from "../render/sprites.js";
 import {
   createHeroArt, ANIMS, FRAME, STRIDE, SWINGS, SWORD_REST, swingPose, bowState, nextCombo,
   drawArm, drawPauldron, drawBow, createSpriteHeroes, spriteFrame, heroPalette,
+  chargeBowState, NOCK, pickView, hasDirection,
 } from "./heroart.js";
 import { HERO_ATLASES } from "./heroatlas-data.js";
+import { createEnemySprites, enemyKind, enemyFrame, deathFrame, ENEMY_HEIGHT } from "./enemyart.js";
 const HERO_SCALE = 1.15; // el héroe se dibuja un poco más grande que su radio de colisión
+const ARROW_Z = 14; // altura de vuelo de la flecha sobre el centro del cuerpo (presentación)
 const CHUNK = 768,
   CHUNK_PAD = 2;
 /** Cámara redondeada a píxeles físicos del canvas (escala de mundo × resolución). */
@@ -67,8 +70,18 @@ export function createRenderer(canvas) {
   const hs = {
     flip: 1, walk: 0, stepHalf: 0, lastX: null, lastY: null, speed: 0, swing: null, lastSwingAt: -9,
     variant: 0, lastShot: -9, deathAt: null, impacts: [], flashes: [], stuck: [], cues: [],
+    arrows: new Map(), shot: null, nock: null, fullAt: 0, dir: "side",
   };
   let lastPlayerScreen = null;
+  // Enemigos dibujados (2.3): estado de animación por id (sólo presentación) y muertes en curso.
+  const enemySprites = createEnemySprites();
+  enemySprites.warm();
+  const es = new Map(),
+    dying = [];
+  const pushDying = (kind, x, y, facing, radius, t0) => {
+    if (dying.length >= 40) dying.shift();
+    dying.push({ kind, x, y, flip: Math.cos(facing || 0) < 0 ? -1 : 1, radius: radius || 18, t0 });
+  };
   let animClock = 0,
     hitstop = 0,
     hitstopGap = 0;
@@ -544,8 +557,11 @@ export function createRenderer(canvas) {
       hitstop = hitstopGap = 0;
       Object.assign(hs, {
         flip: 1, walk: 0, stepHalf: 0, lastX: null, lastY: null, speed: 0, swing: null,
-        lastSwingAt: -9, variant: 0, lastShot: -9, deathAt: null,
+        lastSwingAt: -9, variant: 0, lastShot: -9, deathAt: null, shot: null, nock: null, fullAt: 0, dir: "side",
       });
+      hs.arrows.clear();
+      es.clear();
+      dying.length = 0;
       hs.impacts.length = hs.flashes.length = hs.stuck.length = hs.cues.length = 0;
     },
     event(e, s, meta) {
@@ -563,7 +579,10 @@ export function createRenderer(canvas) {
         y = e.y ?? s.player.y;
       if (e.type === "attack") {
         const w = weaponData(s.player.weapons[s.activeSlot]);
-        if (w.projectile) hs.lastShot = animClock;
+        if (w.projectile) {
+          hs.lastShot = animClock;
+          hs.shot = { level: e.level ?? 1, full: !!e.full, weak: !!e.weak, fx: true, angle: s.player.facing };
+        }
         else {
           // armas de golpe doble (hachas) alternan dos golpes rápidos; el remate es de la espada y similares
           hs.variant = w.hits
@@ -606,15 +625,18 @@ export function createRenderer(canvas) {
           return "deferred";
         }
       }
-      if (e.type === "kill" || e.type === "bossKill")
+      if (e.type === "kill" || e.type === "bossKill") {
+        const kind = enemyKind(e.etype ?? 0, s.floor, e.type === "bossKill");
+        if (layers.sprites && enemySprites.ready(kind)) pushDying(kind, x, y, e.facing, e.radius, animClock);
         particles.emit(
           x,
           y,
           "#a9d5da",
-          e.type === "bossKill" ? 85 : 20,
+          e.type === "bossKill" ? 85 : 12,
           190,
           1,
         );
+      }
       if (e.type === "bossKill") {
         shakeTime = 0.6;
         flashTime = 0.35;
@@ -727,6 +749,8 @@ export function createRenderer(canvas) {
         particles.clear();
         effectDungeon = s.dungeon;
         hs.stuck.length = hs.impacts.length = hs.flashes.length = 0;
+        es.clear();
+        dying.length = 0;
       }
       // Impactos de espada: se disparan cuando la hoja llega (no cuando se apretó el botón).
       for (let i = hs.impacts.length - 1; i >= 0; i--) {
@@ -737,15 +761,26 @@ export function createRenderer(canvas) {
           cx = im.x - Math.cos(away) * 12,
           cy = im.y - Math.sin(away) * 12;
         if (layers.particles) {
-          const n = im.heavy ? 12 : 8,
+          const n = im.heavy ? 22 : 15,
             before = particles.active.length;
           particles.emit(cx, cy, im.heavy ? "#ffd27a" : "#fff0b8", n, 1, 0.2, "streak");
           for (const q of particles.active.slice(before)) {
-            const a = away + (Math.random() - 0.5) * 1.9,
-              v = 150 + Math.random() * (im.heavy ? 330 : 240);
+            const a = away + (Math.random() - 0.5) * 2.3,
+              v = 170 + Math.random() * (im.heavy ? 380 : 280);
             q.vx = Math.cos(a) * v;
             q.vy = Math.sin(a) * v;
-            q.life = q.max = 0.1 + Math.random() * 0.14;
+            q.life = q.max = 0.1 + Math.random() * 0.16;
+            if (Math.random() < 0.35) q.color = "#ffffff";
+          }
+          // brasas: chispas naranjas que caen con gravedad, un poco más largas
+          const b2 = particles.active.length;
+          particles.emit(cx, cy, "#ffb347", im.heavy ? 12 : 8, 1, 0.4, "fleck");
+          for (const q of particles.active.slice(b2)) {
+            const a = away + (Math.random() - 0.5) * 2.8 - 0.5,
+              v = 80 + Math.random() * 200;
+            q.vx = Math.cos(a) * v;
+            q.vy = Math.sin(a) * v - 90;
+            q.life = q.max = 0.25 + Math.random() * 0.3;
           }
           particles.emit(im.x, im.y, "#fff1b0", im.heavy ? 6 : 3, 90, 0.22);
         }
@@ -758,7 +793,10 @@ export function createRenderer(canvas) {
         hs.cues.push({ name: "swordHit", opts: { heavy: im.heavy } });
         hs.cues.push({ name: "enemyHit" });
         if (im.kill) {
-          if (layers.particles) particles.emit(im.x, im.y, "#a9d5da", 20, 190, 1);
+          const kind = enemyKind(im.kill.etype, im.kill.floor);
+          if (layers.sprites && enemySprites.ready(kind))
+            pushDying(kind, im.x, im.y, im.kill.facing, im.kill.radius, animClock);
+          if (layers.particles) particles.emit(im.x, im.y, "#a9d5da", 12, 190, 1);
           hs.cues.push({ name: "enemyDeath" });
         }
       }
@@ -890,7 +928,13 @@ export function createRenderer(canvas) {
               ? RARITIES[d.weapon.rarity].color
               : colors[d.kind],
           );
-        text(
+        const vec = art.icon(
+          d.kind === "weapon"
+            ? d.weapon.id
+            : { chest: "chest", potion: "potion", health: "heart", buff: "star" }[d.kind],
+        );
+        if (vec && d.kind !== "coin") ctx.drawImage(vec, d.x - 17, d.y - 17, 34, 34);
+        else text(
           d.kind === "weapon"
             ? weaponData(d.weapon).icon
             : { chest: "▣", potion: "✚", buff: "✦", health: "+", energy: "ϟ" }[
@@ -1042,10 +1086,35 @@ export function createRenderer(canvas) {
         }
         ctx.globalAlpha = 1;
       }
+      // muertes en curso (cuadros death0..2 y desvanecido)
+      for (let i = dying.length - 1; i >= 0; i--) {
+        const d = dying[i],
+          f = deathFrame(animClock - d.t0);
+        if (!f) {
+          dying.splice(i, 1);
+          continue;
+        }
+        ctx.save();
+        ctx.globalAlpha = f.alpha;
+        ctx.translate(d.x, d.y + d.radius * 0.8);
+        ctx.scale(d.flip, 1);
+        enemySprites.draw(ctx, d.kind, f.name, animClock - d.t0 < 0.06 ? "flash" : "normal");
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
       for (const im of hs.impacts) {
         if (!im.kill) continue;
         const k = im.kill,
           type = k.etype === 1 ? "brute" : k.etype === 2 ? "stalker" : "minor";
+        const kind = enemyKind(k.etype, k.floor);
+        if (layers.sprites && enemySprites.ready(kind)) {
+          ctx.save();
+          ctx.translate(im.x, im.y + k.radius * 0.8);
+          ctx.scale(Math.cos(k.facing) < 0 ? -1 : 1, 1);
+          enemySprites.draw(ctx, kind, "hit", "flash");
+          ctx.restore();
+          continue;
+        }
         ctx.save();
         ctx.translate(im.x, im.y);
         ctx.rotate(k.facing);
@@ -1067,12 +1136,14 @@ export function createRenderer(canvas) {
           wob = Math.sin(age * 55) * 0.16 * Math.exp(-age * 7);
         ctx.globalAlpha = Math.min(1, 6 - age);
         ctx.save();
-        ctx.translate(a.x + Math.cos(a.angle) * 6, a.y + Math.sin(a.angle) * 6);
+        ctx.translate(a.x + Math.cos(a.angle) * 6, a.y - ARROW_Z + Math.sin(a.angle) * 6);
         ctx.rotate(a.angle + wob);
         ctx.drawImage(img, 8 * k, 0, 33 * k, img.height, -33, -4, 33, 8);
         ctx.restore();
       }
       ctx.globalAlpha = 1;
+      const p0 = s.player;
+      if (es.size > 80) for (const id of es.keys()) if (!s.enemies.some((q) => q.id === id)) es.delete(id);
       for (const e of s.enemies) {
         if (e.spawn > 0) {
           circle(e.x, e.y, 22 + Math.sin(s.time * 16) * 6, "#ff735b44");
@@ -1100,6 +1171,48 @@ export function createRenderer(canvas) {
           ctx.beginPath();
           ctx.arc(e.x, e.y, e.boss ? 100 : 40, 0, 7);
           ctx.stroke();
+        }
+        const kind = enemyKind(e.type, s.floor, e.boss);
+        if (layers.sprites && enemySprites.ready(kind)) {
+          let st = es.get(e.id);
+          if (!st) {
+            st = { flip: 1, walk: 0, lx: e.x, ly: e.y, cd: e.cd, windup: e.windup || 0, attackAt: -9 };
+            es.set(e.id, st);
+          }
+          const moved = Math.hypot(e.x - st.lx, e.y - st.ly);
+          st.walk = (st.walk + moved / (ENEMY_HEIGHT[kind] * (e.boss ? 0.9 : 1.1))) % 1;
+          st.moving = moved > 0.15;
+          st.lx = e.x;
+          st.ly = e.y;
+          // ataque: el cd se recarga de golpe (dispararon/embistieron) o terminó la carga del jefe
+          if (e.cd > st.cd + 0.5 || (st.windup > 0 && !(e.windup > 0))) st.attackAt = animClock;
+          st.cd = e.cd;
+          st.windup = e.windup || 0;
+          const c = Math.cos(e.facing || 0);
+          if (Math.abs(c) > 0.25) st.flip = c < 0 ? -1 : 1;
+          const pose = enemyFrame({
+            kind, boss: e.boss, type: e.type, id: e.id, stun: e.stun, windup: e.windup, telegraph: e.telegraph,
+            charge: e.charge, cd: e.cd, sinceAttack: animClock - st.attackAt, walk: st.walk, moving: st.moving,
+            near: Math.hypot(p0.x - e.x, p0.y - e.y) < e.radius + p0.radius + 16, time: s.time,
+          });
+          const feet = e.y + e.radius * 0.8,
+            bob = kind === "spirit" ? Math.sin(s.time * 3 + e.id) * 3 - 4 : 0;
+          ctx.save();
+          ctx.translate(e.x, feet + bob);
+          ctx.scale(st.flip, 1);
+          enemySprites.draw(
+            ctx, kind, pose,
+            e.stun > 0.07 ? "flash" : e.boss && e.hp < e.maxHp * 0.5 && Math.sin(s.time * 9) > 0.2 ? "rage" : "normal",
+          );
+          ctx.restore();
+          const top = feet - ENEMY_HEIGHT[kind] * (e.boss ? 0.92 : 1) - 8;
+          if (!e.boss) {
+            ctx.fillStyle = "#300e1c";
+            ctx.fillRect(e.x - 22, top, 44, 4);
+            ctx.fillStyle = "#ed7180";
+            ctx.fillRect(e.x - 22, top, (44 * e.hp) / e.maxHp, 4);
+          }
+          continue;
         }
         ctx.save();
         ctx.translate(e.x, e.y + Math.sin(s.time * 8 + e.id) * 1.5);
@@ -1145,10 +1258,34 @@ export function createRenderer(canvas) {
       }
       for (const b of s.bullets) {
         if (!b.enemy && !b.homing) {
+          let m = hs.arrows.get(b.id);
+          if (!m) {
+            const fresh = hs.nock && animClock - hs.lastShot < 0.12;
+            m = { t0: animClock, ox: fresh ? hs.nock.x - b.x : 0, oz: fresh ? b.y - hs.nock.y : ARROW_Z, seen: 0 };
+            hs.arrows.set(b.id, m);
+          }
+          m.seen = animClock;
+          const age = animClock - m.t0,
+            k = Math.max(0, 1 - age / 0.1),
+            z = ARROW_Z + (m.oz - ARROW_Z) * Math.exp(-age * 6),
+            ax = b.x + m.ox * k,
+            ay = b.y - z,
+            lv = b.level ?? 1;
+          ctx.globalAlpha = 0.3;
+          ctx.drawImage(sprites.shadow(), b.x - 14, b.y + 6, 28, 7);
+          ctx.globalAlpha = 1;
           ctx.save();
-          ctx.translate(b.x, b.y);
+          ctx.translate(ax, ay);
           ctx.rotate(Math.atan2(b.vy, b.vx));
-          ctx.drawImage(heroArt.arrow(true), -46, -4, 84, 8);
+          if (age < 0.05) ctx.scale(0.6 + age * 8, 1); // sale de la cuerda
+          if (lv >= 1) {
+            ctx.globalCompositeOperation = "lighter";
+            ctx.globalAlpha = 0.45;
+            ctx.drawImage(sprites.glowDot("#ffe7a0"), -16, -10, 32, 20);
+            ctx.globalCompositeOperation = "source-over";
+            ctx.globalAlpha = 1;
+          }
+          ctx.drawImage(heroArt.arrow(true), -46 - 14 * lv, -4, 84 + 14 * lv, 8);
           ctx.restore();
           continue;
         }
@@ -1161,6 +1298,8 @@ export function createRenderer(canvas) {
         );
         circle(b.x, b.y, b.radius, b.enemy ? "#ffd8a1" : "#e5fbff");
       }
+      if (hs.arrows.size > 64 || (hs.arrows.size && (animClock * 60) % 30 < 1))
+        for (const [id, m] of hs.arrows) if (animClock - m.seen > 0.5) hs.arrows.delete(id);
       const p = s.player;
       const wd = weaponData(p.weapons[s.activeSlot]);
       // --- estado de animación del héroe (sólo presentación; nunca toca la simulación) ---
@@ -1176,9 +1315,17 @@ export function createRenderer(canvas) {
       if (dt > 0) hs.speed += (mdist / dt - hs.speed) * Math.min(1, dt * 14);
       const fc = Math.cos(p.facing);
       if (Math.abs(fc) > 0.22) hs.flip = fc < 0 ? -1 : 1;
+      // Vista frente/espalda/costado (sólo si el atlas del héroe trae esa vista completa).
+      {
+        const set = layers.sprites && (wd.id === "sword" || wd.id === "crossbow") && spriteHeroes.get(s.hero);
+        const v = s.mode === "dead" ? "side" : pickView(hs.dir, p.facing);
+        hs.dir = set && (v === "side" || hasDirection(set.data.frames, v)) ? v : "side";
+      }
+      const sideView = hs.dir === "side" || s.mode === "dead" || s.time - p.lastDamage < ANIMS.hit.dur;
       const walking = hs.speed > 30 && s.mode === "playing" && !(p.dashTime > 0);
       if (walking) {
-        const dir = mdx * hs.flip >= -0.01 ? 1 : -1; // caminar hacia atrás si se apunta al revés
+        const fwd = hs.dir === "front" ? mdy : hs.dir === "back" ? -mdy : mdx * hs.flip;
+        const dir = fwd >= -0.01 ? 1 : -1; // caminar hacia atrás si se apunta al revés
         hs.walk = (((hs.walk + (dir * mdist) / STRIDE) % 1) + 1) % 1;
         const half = Math.floor(hs.walk * 2);
         if (half !== hs.stepHalf) {
@@ -1219,33 +1366,109 @@ export function createRenderer(canvas) {
         else swing = { variant: hs.swing.variant, t };
       }
       const since = animClock - hs.lastShot,
-        charge = Math.max(0, 1 - p.attackCd / (wd.cooldown || 0.6));
+        charge = Math.max(0, 1 - p.attackCd / (wd.cooldown || 0.6)),
+        drawLevel = wd.charge ? Math.min(1, (p.draw || 0) / BOW.FULL) : 0;
+      const bow = wd.charge
+        ? chargeBowState(since, drawLevel)
+        : bowState(since, charge, Math.max(0, since - (wd.cooldown || 0.5)));
+      // punto de encaje en el mundo (de ahí sale la flecha)
+      const view3 = sideView ? "side" : hs.dir,
+        nk = NOCK[view3] || NOCK.side,
+        nflip = view3 === "side" ? hs.flip : 1;
+      hs.nock = { x: p.x + nk[0] * nflip * HERO_SCALE, y: p.y + nk[1] * HERO_SCALE, at: animClock };
       lastPlayerScreen = {
         x: ((p.x - view.x) * scale * dpr + originX) / dpr,
         y: ((p.y - 12 - view.y) * scale * dpr + originY) / dpr,
       };
+      // Indicador de carga del arco: arco de progreso alrededor del héroe, brillo + pulso a tope.
+      if (wd.charge && drawLevel > 0 && s.mode === "playing") {
+        const R = 25, cy0 = p.y + 13, full = drawLevel >= 1, sq = 0.38;
+        if (full && !hs.fullAt) hs.fullAt = animClock;
+        if (!full) hs.fullAt = 0;
+        ctx.save();
+        // anillo en el piso (elipse) para no tapar el sprite
+        ctx.translate(p.x, cy0);
+        ctx.scale(1, sq);
+        ctx.lineCap = "round";
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = "#0b0d1277";
+        ctx.beginPath();
+        ctx.arc(0, 0, R, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = full ? "#fff3c2" : drawLevel < BOW.MIN / BOW.FULL ? "#a49a85" : "#f2c25b";
+        ctx.beginPath();
+        ctx.arc(0, 0, R, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * drawLevel);
+        ctx.stroke();
+        for (const tk of [1 / 3, 2 / 3]) {
+          const a = -Math.PI / 2 + Math.PI * 2 * tk;
+          ctx.fillStyle = drawLevel >= tk ? "#fff3c2" : "#6b6455";
+          ctx.fillRect(Math.cos(a) * R - 2, Math.sin(a) * R - 4, 4, 8);
+        }
+        if (full) {
+          const age = animClock - hs.fullAt;
+          if (age < 0.3) {
+            ctx.globalAlpha = 1 - age / 0.3;
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = "#fff6d0";
+            ctx.beginPath();
+            ctx.arc(0, 0, R + age * 70, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+        if (full) {
+          // brillo en el encaje mientras se sostiene a tope
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+          ctx.globalAlpha = 0.3 + 0.25 * Math.sin(animClock * 12);
+          ctx.drawImage(sprites.glowDot("#ffe7a0"), hs.nock.x - 14, hs.nock.y - 14, 28, 28);
+          ctx.restore();
+        }
+      } else hs.fullAt = 0;
       ctx.save();
       ctx.translate(p.x, p.y);
-      ctx.scale(hs.flip * HERO_SCALE, HERO_SCALE);
+      ctx.scale((sideView ? hs.flip : 1) * HERO_SCALE, HERO_SCALE);
       ctx.globalAlpha = p.invuln > 0 && s.mode === "playing" ? 0.82 + 0.18 * Math.sin(s.time * 40) : 1;
       drawFigure(ctx, {
+        dir: sideView ? "side" : hs.dir,
         hero: s.hero,
         skin: meta.selectedSkin,
         anim,
         fi,
         flash,
-        la: Math.atan2(Math.sin(p.facing), Math.cos(p.facing) * hs.flip),
+        la: Math.atan2(Math.sin(p.facing), Math.cos(p.facing) * (sideView ? hs.flip : 1)),
         weapon: wd.id,
         swing: wd.projectile ? null : swing,
-        bow: bowState(since, charge, Math.max(0, since - (wd.cooldown || 0.5))),
+        bow,
         walk: hs.walk,
-        shooting: since < (wd.cooldown || 0.5) + 0.6,
+        shooting: drawLevel > 0 || since < (wd.cooldown || 0.5) + 0.6,
         clock: animClock,
         range: wd.range / HERO_SCALE,
         trailCtx: true,
       });
       ctx.restore();
       ctx.globalAlpha = 1;
+      // Suelta: destello en el encaje, polvillo y (a tope) chispas en la dirección del tiro.
+      if (hs.shot?.fx) {
+        hs.shot.fx = false;
+        const { level, full } = hs.shot,
+          a = hs.shot.angle;
+        hs.flashes.push({ x: hs.nock.x + Math.cos(a) * 6, y: hs.nock.y + Math.sin(a) * 6, t: animClock, heavy: full, a, muzzle: true, k: 0.35 + 0.65 * level });
+        if (layers.particles && !reduced) {
+          particles.emit(hs.nock.x, hs.nock.y, "#d8cdb0", 2 + Math.round(level * 4), 40, 0.35, "dust");
+          if (full) {
+            const b0 = particles.active.length;
+            particles.emit(hs.nock.x, hs.nock.y, "#fff0b8", 7, 1, 0.16, "streak");
+            for (const q of particles.active.slice(b0)) {
+              const qa = a + (Math.random() - 0.5) * 0.7,
+                v = 220 + Math.random() * 220;
+              q.vx = Math.cos(qa) * v;
+              q.vy = Math.sin(qa) * v;
+            }
+          }
+        }
+      }
       if (p.dome > 0) {
         circle(p.x, p.y, 95, "#acd9ff22");
         ctx.strokeStyle = "#b4e4ff";
@@ -1263,12 +1486,13 @@ export function createRenderer(canvas) {
       }
       for (const particle of layers.particles ? particles.active : []) {
         ctx.globalAlpha = Math.min(1, particle.life / particle.max);
-        if (particle.kind === "streak") {
+        if (particle.kind === "streak" || particle.kind === "fleck") {
+          const tail = particle.kind === "fleck" ? 0.018 : 0.035;
           ctx.strokeStyle = particle.color;
-          ctx.lineWidth = 1.8;
+          ctx.lineWidth = particle.kind === "fleck" ? 1.4 : 1.8;
           ctx.beginPath();
           ctx.moveTo(particle.x, particle.y);
-          ctx.lineTo(particle.x - particle.vx * 0.035, particle.y - particle.vy * 0.035);
+          ctx.lineTo(particle.x - particle.vx * tail, particle.y - particle.vy * tail);
           ctx.stroke();
         } else
           circle(
@@ -1288,7 +1512,7 @@ export function createRenderer(canvas) {
           continue;
         }
         const k = 1 - age / 0.13,
-          r = (f.heavy ? 20 : 14) * (0.6 + 0.4 * k);
+          r = (f.heavy ? 20 : 14) * (0.6 + 0.4 * k) * (f.muzzle ? f.k * 0.7 : 1);
         ctx.save();
         ctx.globalCompositeOperation = "lighter";
         ctx.globalAlpha = k * 0.8;

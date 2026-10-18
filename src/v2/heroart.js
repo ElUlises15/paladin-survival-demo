@@ -204,6 +204,18 @@ export function bowState(sinceShot, charge, idleFor = 0) {
   return { draw, arrow: true, vib: 0, nock: 1 };
 }
 
+// Arco cargado (2.3): el tensado sigue al botón (nivel 0..1), no al cooldown.
+export function chargeBowState(sinceShot, level) {
+  if (level > 0) return { draw: clamp(level), arrow: true, vib: 0, nock: 1 };
+  if (sinceShot < 0.11)
+    return { draw: 0, arrow: false, vib: Math.sin(sinceShot * 95) * 2.6 * Math.exp(-sinceShot * 16), nock: 0 };
+  if (sinceShot < 0.2) return { draw: 0, arrow: true, vib: 0, nock: easeOut((sinceShot - 0.11) / 0.09) };
+  return { draw: 0, arrow: true, vib: 0, nock: 1 };
+}
+// Punto de encaje de la flecha (centro del arco) por vista, en unidades locales del héroe
+// (pies en y = 16, mirando a la derecha, antes de HERO_SCALE). Medido sobre los cuadros del atlas.
+export const NOCK = { side: [20, -24], front: [5, -28], back: [8, -40] };
+
 // ---------- Dibujo ----------
 function metalGrad(c, base, x0, y0, x1, y1) {
   const g = c.createLinearGradient(x0, y0, x1, y1);
@@ -1064,10 +1076,54 @@ export function recolorPixels(data, skin) {
   return n;
 }
 /** Elige el cuadro del atlas para el estado del héroe. Devuelve el nombre o null si no hay sprite para ese caso. */
+// Vistas de frente/espalda (2.3): prefijo f_ (hacia abajo) / k_ (hacia arriba). Golpe y muerte usan el costado.
+export const DIR_PREFIX = { front: "f_", back: "k_" };
+export const DIR_REQUIRED = [
+  ...[0, 1, 2, 3, 4, 5].flatMap((i) => ["walk" + i, "bowwalk" + i]), "a0", "a1", "a2", "dash", "bow0", "bow1", "bow2",
+];
+export function hasDirection(frames, dir) {
+  const p = DIR_PREFIX[dir];
+  return !!p && DIR_REQUIRED.every((n) => frames[p + n]);
+}
+// Vista según el ángulo de mira/movimiento, con histéresis (8 direcciones: diagonales = costado espejado).
+export function pickView(prev, facing) {
+  const sn = Math.sin(facing);
+  if (prev === "front") return sn > 0.5 ? "front" : sn < -0.72 ? "back" : "side";
+  if (prev === "back") return sn < -0.5 ? "back" : sn > 0.72 ? "front" : "side";
+  return sn > 0.72 ? "front" : sn < -0.72 ? "back" : "side";
+}
+function dirFrame(o, p) {
+  const F = o.frames;
+  const has = (n) => (F[p + n] ? p + n : null);
+  if (o.anim === "dash") return has("dash");
+  if (o.weapon === "crossbow") {
+    const st = o.bow;
+    if (st && (o.shooting || st.vib)) {
+      if (st.vib || !st.arrow) return has("bow0");
+      return has(st.draw < 0.3 ? "bow0" : st.draw < 0.75 ? "bow1" : "bow2");
+    }
+    if (o.anim === "walk") return has("bowwalk" + (Math.floor(o.walk * 6) % 6));
+    return has("bow0");
+  }
+  if (o.weapon !== "sword") return null;
+  if (o.swing) {
+    const sw = SWINGS[o.swing.variant] || SWINGS[0],
+      t = o.swing.t;
+    if (t < sw.strike[0]) return has("a0");
+    if (t < sw.strike[1] + 0.02) return has("a1");
+    if (t < sw.keys[3][0] + 0.04) return has("a2");
+  }
+  if (o.anim === "walk") return has("walk" + (Math.floor(o.walk * 6) % 6));
+  return has("walk2");
+}
 export function spriteFrame(o) {
   const F = o.frames;
   const has = (n) => (F[n] ? n : null);
   if (o.anim === "death") return has("death" + Math.min(4, Math.floor((o.fi * 5) / 8)));
+  if (o.dir && DIR_PREFIX[o.dir] && o.anim !== "hit") {
+    const d = dirFrame(o, DIR_PREFIX[o.dir]);
+    if (d) return d;
+  }
   if (o.anim === "dash") return has(o.fi < 2 ? "dash0" : "dash1");
   if (o.anim === "hit") return has(o.fi < 2 ? "hit0" : "hit1");
   if (o.weapon === "crossbow") {

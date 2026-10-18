@@ -69,6 +69,7 @@ export const WEAPONS = [
     range: 560,
     cooldown: 0.5,
     projectile: 520,
+    charge: true, // arco cargado: mantener = tensar, soltar = disparar (ver BOW / bowShot)
     icon: "➹",
   },
   {
@@ -121,6 +122,26 @@ export const POLICY = {
   minRuns: 3,
   adTimeoutMs: 10000,
 };
+// Arco largo cargado. Tensado completo en FULL s; por debajo de MIN s sale una flecha débil y corta
+// (spamear no rinde). Daño/alcance/velocidad crecen con el nivel de tensado; a tope atraviesa 1 enemigo.
+export const BOW = { FULL: 1.0, MIN: 0.15, SLOW: 0.32, COOLDOWN: 0.24, WEAK_COOLDOWN: 0.42 };
+export function bowLevel(draw) {
+  return Math.max(0, Math.min(1, (draw || 0) / BOW.FULL));
+}
+export function bowShot(baseDamage, draw) {
+  const t = bowLevel(draw);
+  if ((draw || 0) < BOW.MIN)
+    return { level: t, weak: true, full: false, damage: baseDamage * 0.25, speed: 300, range: 150, pierce: 0, cooldown: BOW.WEAK_COOLDOWN };
+  const full = t >= 1;
+  return {
+    level: t, weak: false, full,
+    damage: baseDamage * (0.35 + 2.85 * Math.pow(t, 1.3)),
+    speed: 360 + 400 * t,
+    range: 230 + 400 * t,
+    pierce: full ? 1 : 0,
+    cooldown: BOW.COOLDOWN,
+  };
+}
 export function weapon(id = "sword", rarity = 0) {
   return { id, rarity };
 }

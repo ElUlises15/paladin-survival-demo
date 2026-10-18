@@ -6,7 +6,7 @@ import {
   roomAt,
   solid,
 } from "./dungeon.js";
-import { HEROES, BOSSES, weapon, weaponData } from "./data.js";
+import { HEROES, BOSSES, weapon, weaponData, BOW, bowShot } from "./data.js";
 export function createRun(
   meta,
   { seed = 1, floor = 1, checkpoint = null } = {},
@@ -386,10 +386,18 @@ export function interact(s) {
   s.events.push({ type: "pickup" });
   return true;
 }
+function cancelDrawIfSwitched(s, held) {
+  if (held.charge || !(s.player.draw > 0)) return;
+  s.player.draw = 0;
+  s.events.push({ type: "drawCancel" });
+}
+// Mientras se tensa el arco el héroe camina más lento (hasta -BOW.SLOW).
+export function drawSlow(p) {
+  return p.draw > 0 ? 1 - BOW.SLOW * Math.min(1, p.draw / 0.3) : 1;
+}
 function step(s, dt, input) {
   s.time += dt;
   const p = s.player;
-  s.events.length = 0;
   for (const k of [
     "attackCd",
     "dashCd",
@@ -411,7 +419,13 @@ function step(s, dt, input) {
   }
   if (mx || my) p.facing = Math.atan2(my, mx);
   if (input.swap) p.weapons.length > 1 && (s.activeSlot = 1 - s.activeSlot);
+  let held = weaponData(p.weapons[s.activeSlot]);
+  cancelDrawIfSwitched(s, held); // cambio de arma: se suelta la cuerda sin disparar
   if (input.dash && p.dashCd <= 0) {
+    if (p.draw > 0) {
+      p.draw = 0; // el dash cancela el tensado
+      s.events.push({ type: "drawCancel" });
+    }
     p.dashTime = 0.25;
     p.invuln = Math.max(p.invuln, 0.25);
     p.dashCd = 1 * (1 - 0.08 * (s.talents.reflejos || 0));
@@ -422,8 +436,8 @@ function step(s, dt, input) {
   moveCircle(
     s.dungeon,
     p,
-    (p.dashTime > 0 ? p.dashX * 650 : mx * p.speed) * dt,
-    (p.dashTime > 0 ? p.dashY * 650 : my * p.speed) * dt,
+    (p.dashTime > 0 ? p.dashX * 650 : mx * p.speed * drawSlow(p)) * dt,
+    (p.dashTime > 0 ? p.dashY * 650 : my * p.speed * drawSlow(p)) * dt,
   );
   const r = roomAt(s.dungeon, p, true);
   if (r) {
@@ -489,16 +503,13 @@ function step(s, dt, input) {
       }
     }
   }
-  {
-    // "draw": el arquero vuelve a tensar (crujido del arco) poco después de soltar la flecha.
-    const w = weaponData(p.weapons[s.activeSlot]),
-      at = (w.cooldown || 0.5) - 0.14;
-    if (w.projectile && p.attackCd <= at && p.attackCd > at - dt)
-      s.events.push({ type: "draw" });
-  }
   s.target = autoAim(s);
   if (s.target) p.facing = Math.atan2(s.target.y - p.y, s.target.x - p.x);
-  if (input.interact) interact(s);
+  if (input.interact) {
+    interact(s);
+    held = weaponData(p.weapons[s.activeSlot]); // levantar un arma puede reemplazar el arco
+    cancelDrawIfSwitched(s, held);
+  }
   if (input.skill && p.skillCd <= 0) {
     p.skillCd = HEROES[s.hero].cooldown * (1 - 0.06 * (s.talents.fe || 0));
     s.events.push({ type: "skill" });
@@ -513,8 +524,33 @@ function step(s, dt, input) {
         }
     }
   }
+  // Arco cargado: mantener Atacar tensa la cuerda (nunca dispara solo); soltar dispara.
+  if (held.charge) {
+    if (input.attack && p.attackCd <= 0 && !(p.dashTime > 0)) {
+      const before = p.draw || 0;
+      p.draw = before + dt;
+      if (!before) s.events.push({ type: "draw", level: 0 });
+      for (const stage of [1, 2])
+        if (before < (BOW.FULL * stage) / 3 && p.draw >= (BOW.FULL * stage) / 3)
+          s.events.push({ type: "drawStage", level: stage / 3 });
+      if (before < BOW.FULL && p.draw >= BOW.FULL) s.events.push({ type: "drawFull", level: 1 });
+    } else if (!input.attack && p.draw > 0) {
+      const shot = bowShot(held.damage * (1 + 0.05 * (s.talents.filo || 0) + p.buff), p.draw);
+      p.draw = 0;
+      p.attackCd = shot.cooldown;
+      p.swing = 0.16;
+      s.events.push({ type: "attack", level: shot.level, weak: shot.weak, full: shot.full });
+      s.bullets.push({
+        x: p.x, y: p.y,
+        vx: Math.cos(p.facing) * shot.speed,
+        vy: Math.sin(p.facing) * shot.speed,
+        radius: 6, life: shot.range / shot.speed, enemy: false,
+        damage: shot.damage, speed: shot.speed, pierce: shot.pierce, level: shot.level, hitIds: [],
+      });
+    }
+  }
   const combo = p.combo > 0 && (p.combo -= dt) <= 0;
-  if ((input.attack && p.attackCd <= 0) || combo) {
+  if ((input.attack && p.attackCd <= 0 && !held.charge) || combo) {
     const w = weaponData(combo ? p.comboWeapon : p.weapons[s.activeSlot]);
     if (!combo) p.attackCd = w.cooldown;
     if (w.hits && !combo) {
@@ -690,7 +726,13 @@ function step(s, dt, input) {
           e.spawn <= 0 &&
           Math.hypot(e.x - b.x, e.y - b.y) < e.radius + b.radius
         ) {
-          hit(s, e, b.damage, 10);
+          if (b.hitIds && b.hitIds.includes(e.id)) continue;
+          hit(s, e, b.damage, 10 + 25 * (b.level || 0));
+          if (b.pierce > 0) {
+            b.pierce--;
+            b.hitIds.push(e.id);
+            continue;
+          }
           b.life = 0;
           break;
         }
@@ -736,6 +778,7 @@ function step(s, dt, input) {
 }
 export function updateRun(s, dt, input = {}) {
   if (s.mode !== "playing") return;
+  s.events.length = 0; // una vez por llamada: los sub-pasos no pierden eventos (draw/stage/full/attack)
   const n = Math.ceil(dt / (1 / 60));
   for (let i = 0; i < n && s.mode === "playing"; i++)
     step(s, dt / n, {

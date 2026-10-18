@@ -526,10 +526,25 @@ button.primary {
 .gem-art svg {
   width: 45px;
   height: 45px;
-  fill: #75c7dc;
-  stroke: #d8f8ff;
-  stroke-width: 1;
   filter: drop-shadow(0 0 12px #65aacc88);
+}
+/* Íconos vectoriales (icons.js): colores propios; sólo tamaño/alineación desde CSS. */
+.ico {
+  display: inline-block;
+  flex: none;
+  overflow: visible;
+}
+.ico.inline {
+  width: 1.25em;
+  height: 1.25em;
+  vertical-align: -0.28em;
+  margin-right: 0.12em;
+  filter: drop-shadow(0 1px 1px #0009);
+}
+.completion-crest .ico {
+  width: 0.8em;
+  height: 0.8em;
+  vertical-align: 0;
 }
 .vitals {
   width: 210px !important;
@@ -594,13 +609,9 @@ button.primary {
 .action svg {
   width: 31px;
   height: 31px;
-  stroke: #f7dfad;
-  fill: none;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
   display: block;
   margin: 0 auto 5px;
+  filter: drop-shadow(0 2px 2px #000a);
 }
 .attack svg {
   width: 40px;
@@ -1322,4 +1333,10 @@ canvas.title-crest {
 #layers small {
   display: block;
   color: #9eae9b;
+}
+button .ico.inline {
+  width: 1.05em;
+  height: 1.05em;
+  vertical-align: -0.17em;
+  margin: 0 0.05em;
 }

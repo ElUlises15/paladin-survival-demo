@@ -26,6 +26,7 @@ export function createParticles(capacity = 240) {
           color,
           kind,
           angle: a,
+          g: kind === "fleck" ? 320 : -9,
         });
         active.push(p);
       }
@@ -42,7 +43,7 @@ export function createParticles(capacity = 240) {
         }
         p.x += p.vx * dt;
         p.y += p.vy * dt;
-        p.vy -= dt * 9;
+        p.vy += dt * (p.g ?? -9);
       }
     },
     clear() {
