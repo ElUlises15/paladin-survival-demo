@@ -4,6 +4,32 @@ import { createArt } from "./art.js";
 import { TILE, SIZE } from "./dungeon.js";
 import { weaponData, SKINS, RARITIES } from "./data.js";
 import { createSpriteCache } from "../render/sprites.js";
+const CHUNK = 768,
+  CHUNK_PAD = 2;
+/** Cámara redondeada a píxeles físicos del canvas (escala de mundo × resolución). */
+export function snapCamera(camera, scale, dpr) {
+  const k = scale * dpr;
+  if (!(k > 0)) return { x: camera.x, y: camera.y };
+  return { x: Math.round(camera.x * k) / k, y: Math.round(camera.y * k) / k };
+}
+// Resolución automática: arranca en la nativa (máx. 2) y sólo cambia con histéresis fuerte, en saltos
+// de 0,5, para no redimensionar el canvas en mitad de la partida (cada cambio se veía como un parpadeo).
+const AUTO_LEVELS = [0.75, 1, 1.5, 2];
+export function autoStart(deviceDpr) {
+  const max = Math.min(deviceDpr || 1, 2);
+  return AUTO_LEVELS.filter((l) => l <= max + 1e-6).pop() ?? 0.75;
+}
+export function autoStep(current, frameAvg, timer, maxDpr, drops = 0) {
+  const levels = AUTO_LEVELS.filter((l) => l <= maxDpr + 1e-6);
+  if (!levels.length) levels.push(0.75);
+  const i = Math.max(0, levels.findIndex((l) => Math.abs(l - current) < 1e-6));
+  // Bajar: 2 s seguidos por debajo de ~48 fps. Subir: 10 s por encima de ~58 fps y sólo si bajó ≤ 1 vez.
+  if (frameAvg > 1 / 48 && timer > 2 && i > 0) return { scale: levels[i - 1], timer: 0 };
+  if (frameAvg < 1 / 58 && timer > 10 && i < levels.length - 1 && drops <= 1)
+    return { scale: levels[i + 1], timer: 0 };
+  if (frameAvg >= 1 / 58 && frameAvg <= 1 / 48) return { scale: current, timer: 0 };
+  return { scale: current, timer };
+}
 export function createRenderer(canvas) {
   const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true }),
     sprites = createSpriteCache(),
@@ -124,12 +150,12 @@ export function createRenderer(canvas) {
         c.lineTo(px + TILE - 4, py + 3);
         c.stroke();
         for (let i = 0; i < 28; i++) {
-          c.fillStyle = i % 2 ? "#ffffff07" : "#00000016";
+          c.fillStyle = i % 2 ? "#ffffff06" : "#00000012";
           c.fillRect(
             px + ((n * i + 7) % 44),
             py + ((n + i * 17) % 44),
-            2 + (i % 3),
-            1,
+            3 + (i % 3),
+            2,
           );
         }
         if (n % 5 === 0) {
@@ -288,17 +314,21 @@ export function createRenderer(canvas) {
         )
           continue;
         const tile = document.createElement("canvas");
-        tile.width = tile.height = 768;
-        tile.getContext("2d").drawImage(cache, x, y, 768, 768, 0, 0, 768, 768);
+        tile.width = tile.height = CHUNK + CHUNK_PAD;
+        const tc = tile.getContext("2d");
+        tc.fillStyle = "#030609";
+        tc.fillRect(0, 0, tile.width, tile.height);
+        tc.drawImage(cache, -x, -y);
         chunks.push({ x, y, tile });
       }
     cache.width = cache.height = 1;
     camera = { x: s.player.x, y: s.player.y };
     lastFloor = s.floor;
   }
-  let autoScale = Math.min(devicePixelRatio || 1, 1.5),
+  let autoScale = autoStart(devicePixelRatio || 1),
     frameAvg = 1 / 60,
-    adaptTimer = 0;
+    adaptTimer = 0,
+    autoDrops = 0;
   return {
     crest(canvas) {
       canvas
@@ -377,14 +407,12 @@ export function createRenderer(canvas) {
       // vuelve a subir si sobra margen. El canvas se estira por CSS, la lógica usa px CSS.
       const maxDpr = Math.min(devicePixelRatio || 1, 2);
       if (meta.settings.quality === "auto" && s && dt > 0) {
-        frameAvg += (dt - frameAvg) * 0.05;
-        adaptTimer += dt;
-        if (adaptTimer > 1.5) {
-          if (frameAvg > 1 / 50 && autoScale > 0.75)
-            autoScale = Math.max(0.75, autoScale - 0.25);
-          else if (frameAvg < 1 / 58 && autoScale < maxDpr)
-            autoScale = Math.min(maxDpr, autoScale + 0.125);
-          adaptTimer = 0;
+        frameAvg += (Math.min(dt, 0.1) - frameAvg) * 0.05;
+        const next = autoStep(autoScale, frameAvg, adaptTimer + dt, maxDpr, autoDrops);
+        adaptTimer = next.timer;
+        if (next.scale !== autoScale) {
+          if (next.scale < autoScale) autoDrops++;
+          autoScale = next.scale;
         }
       }
       const dpr =
@@ -402,6 +430,7 @@ export function createRenderer(canvas) {
         canvas.height = Math.round(h * dpr);
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.imageSmoothingEnabled = true; // arte vectorial/suave: filtrado sí, pero sobre posiciones alineadas
       ctx.fillStyle = "#030609";
       ctx.fillRect(0, 0, w, h);
       const reduced = reducedMotion();
@@ -479,37 +508,34 @@ export function createRenderer(canvas) {
         !reduced && meta.settings.shake !== false && shakeTime > 0
           ? Math.sin(clock * 110) * 8 * Math.min(1, shakeTime * 5)
           : 0;
-      ctx.translate(w / 2 + shake, h / 2);
+      // Cámara alineada a píxeles físicos del canvas: la textura del piso (grano fino, líneas de 1 px)
+      // se desplaza siempre un número entero de píxeles → mismo muestreo cada frame, sin "estática".
+      const view = snapCamera(camera, scale, dpr);
+      ctx.translate(
+        Math.round((w / 2 + shake) * dpr) / dpr,
+        Math.round((h / 2) * dpr) / dpr,
+      );
       ctx.scale(scale, scale);
-      ctx.translate(-camera.x, -camera.y);
+      ctx.translate(-view.x, -view.y);
       const vw = w / scale / 2 + 768,
         vh = h / scale / 2 + 768;
-      const left = camera.x - w / scale / 2 - 8,
-        top = camera.y - h / scale / 2 - 8,
+      const left = view.x - w / scale / 2 - 8,
+        top = view.y - h / scale / 2 - 8,
         right = left + w / scale + 16,
         bottom = top + h / scale + 16;
-      for (const chunk of chunks) {
-        const x = Math.max(left, chunk.x),
-          y = Math.max(top, chunk.y),
-          ex = Math.min(right, chunk.x + 768),
-          ey = Math.min(bottom, chunk.y + 768);
-        if (ex > x && ey > y)
-          ctx.drawImage(
-            chunk.tile,
-            x - chunk.x,
-            y - chunk.y,
-            ex - x,
-            ey - y,
-            x,
-            y,
-            ex - x,
-            ey - y,
-          );
-      }
+      // Bloques completos (sin recorte fraccionario) y con CHUNK_PAD px de solape: sin costuras entre bloques.
+      for (const chunk of chunks)
+        if (
+          chunk.x < right &&
+          chunk.x + CHUNK + CHUNK_PAD > left &&
+          chunk.y < bottom &&
+          chunk.y + CHUNK + CHUNK_PAD > top
+        )
+          ctx.drawImage(chunk.tile, chunk.x, chunk.y);
       for (const l of lights) {
         if (
-          Math.abs(l.x - camera.x) > vw - 600 ||
-          Math.abs(l.y - camera.y) > vh - 600
+          Math.abs(l.x - view.x) > vw - 600 ||
+          Math.abs(l.y - view.y) > vh - 600
         )
           continue;
         ctx.globalAlpha = 0.55 + Math.sin(s.time * 9 + l.x) * 0.12;
@@ -978,8 +1004,8 @@ export function createRenderer(canvas) {
       light.addColorStop(1, tint);
       ctx.fillStyle = light;
       ctx.fillRect(
-        camera.x - w / scale,
-        camera.y - h / scale,
+        view.x - w / scale,
+        view.y - h / scale,
         (w * 2) / scale,
         (h * 2) / scale,
       );

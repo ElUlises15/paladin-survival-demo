@@ -224,7 +224,7 @@ function show(name) {
 function lobby() {
   const vip = vipActive(meta, Date.now());
   if (meta.selectedSkin === "stellar" && !vip) meta.selectedSkin = "classic";
-  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">◈ ${meta.almas} almas &nbsp; ✧ ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario${meta.completedOnce ? ' <span class="completion-crest" title="Venciste al Abismo">♜</span>' : ""}</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? " · ✧ Pase del Paladín" : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.1.0 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
+  screen.innerHTML = `<header class="header"><span class="eyebrow">Paladin · Mazmorras</span><span class="currency">◈ ${meta.almas} almas &nbsp; ✧ ${meta.gemas} gemas</span></header><div class="lobby"><section><div class="eyebrow">Un refugio entre las sombras</div><h1>Santuario${meta.completedOnce ? ' <span class="completion-crest" title="Venciste al Abismo">♜</span>' : ""}</h1><p>Elegí tu camino. La oscuridad te espera.</p><div class="hero-art"><canvas id="hero-preview" width="280" height="150" aria-label="Tu héroe"></canvas></div><p class="${vip ? "vip-name" : ""}">${HEROES[meta.selectedHero].name} · ${HEROES[meta.selectedHero].skill}${vip ? " · ✧ Pase del Paladín" : ""}</p></section><nav class="menu" id="menu"></nav></div><footer class="footer"><span id="version">v2.1.1 · Tocá para despertar</span><span class="badge" id="demo-badge">${platform.isNative ? "ANDROID" : "DEMO"}</span></footer>`;
   const m = $("menu");
   if (meta.checkpoint)
     addButton(m, "Continuar partida", () => start(true), "primary");
@@ -629,7 +629,7 @@ function settings() {
     toast("Vas a ver el tutorial al jugar");
   });
   const note = document.createElement("p");
-  note.textContent = "Español rioplatense · v2.1.0";
+  note.textContent = "Español rioplatense · v2.1.1";
   c.append(note);
   addButton(c, "Borrar progreso", async () => {
     if (
