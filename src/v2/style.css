@@ -875,3 +875,13 @@ body {
 #hud canvas {
   pointer-events: auto;
 }
+button,
+a,
+select,
+label,
+input {
+  touch-action: manipulation;
+}
+#controls button {
+  touch-action: none;
+}

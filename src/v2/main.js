@@ -1105,7 +1105,8 @@ function watchdog() {
     if (!document.hidden && loop.check(true)) errlog.record("watchdog", "loop restarted");
     measure();
     const now = Date.now();
-    if (busy && busySince && now - busySince > 240000) {
+    if (busy && busySince && now - busySince > 660000) {
+      // Red de seguridad por encima del timeout más largo de la plataforma (compras: 600 s).
       errlog.record("watchdog", "busy reset");
       busy = false;
     }

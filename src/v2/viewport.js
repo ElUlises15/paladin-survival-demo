@@ -55,14 +55,23 @@ export function installViewport() {
   for (const t of ["gesturestart", "gesturechange", "gestureend"])
     document.addEventListener(t, block, { passive: false });
   document.addEventListener("dblclick", block, { passive: false });
-  let lastEnd = 0;
+  // Doble toque sobre el juego (no sobre botones): evitar el zoom de Safari. Los botones usan
+  // touch-action: manipulation, así que un toque rápido en la UI nunca se cancela.
+  let lastEnd = 0,
+    lastX = 0,
+    lastY = 0;
   document.addEventListener(
     "touchend",
     (e) => {
-      const now = Date.now();
-      const tag = e.target?.tagName;
-      if (now - lastEnd < 320 && tag !== "INPUT" && tag !== "SELECT" && tag !== "TEXTAREA") e.preventDefault();
+      const now = Date.now(),
+        t = e.changedTouches?.[0],
+        x = t?.clientX ?? 0,
+        y = t?.clientY ?? 0;
+      const ui = e.target?.closest?.("button, a, input, select, textarea, label, [role=button], #screen, #modal");
+      if (!ui && now - lastEnd < 320 && Math.hypot(x - lastX, y - lastY) < 40) e.preventDefault();
       lastEnd = now;
+      lastX = x;
+      lastY = y;
     },
     { passive: false },
   );
